@@ -1,5 +1,5 @@
 import { count } from 'drizzle-orm';
-import { db } from '../db/index.ts';
+import { db, withDbRetry } from '../db/index.ts';
 import {
   classArms,
   examinations,
@@ -30,19 +30,31 @@ async function runSeed() {
       { key: 'navigation', content: DEFAULT_NAVIGATION },
     ];
 
-    for (const sec of defaultSections) {
-      await db
-        .insert(siteSettings)
-        .values({
-          sectionKey: sec.key,
-          content: sec.content,
-        })
-        .onConflictDoNothing({ target: siteSettings.sectionKey });
+    const existingSettings = await withDbRetry(() =>
+      db.select({ sectionKey: siteSettings.sectionKey }).from(siteSettings)
+    );
+    const existingKeys = new Set(existingSettings.map((row) => row.sectionKey));
+    const missingSections = defaultSections.filter(
+      (sec) => !existingKeys.has(sec.key)
+    );
+
+    if (missingSections.length > 0) {
+      await withDbRetry(() =>
+        db
+          .insert(siteSettings)
+          .values(
+            missingSections.map((sec) => ({
+              sectionKey: sec.key,
+              content: sec.content,
+            }))
+          )
+          .onConflictDoNothing({ target: siteSettings.sectionKey })
+      );
     }
 
-    const [{ value: classArmCount }] = await db
-      .select({ value: count() })
-      .from(classArms);
+    const [{ value: classArmCount }] = await withDbRetry(() =>
+      db.select({ value: count() }).from(classArms)
+    );
 
     if (Number(classArmCount) === 0) {
       const juniorClasses = ['JSS1', 'JSS2', 'JSS3'];

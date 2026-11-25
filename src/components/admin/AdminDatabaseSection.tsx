@@ -611,8 +611,8 @@ export function AdminDatabaseSection({ token }: { token: string }) {
               In Supabase, click <strong>Connect</strong> at the top of your
               project (or{' '}
               <strong>Project Settings &rarr; Database &rarr; Connection string</strong>
-              ), select <strong>URI</strong> (use the{' '}
-              <strong>Session / Transaction Pooler</strong> URI for Vercel), and
+              ), select <strong>URI</strong> (prefer the{' '}
+              <strong>Transaction Pooler (port 6543)</strong> URI for Vercel), and
               replace <code>[YOUR-PASSWORD]</code> with your database password.
             </li>
             <li>

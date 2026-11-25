@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { asc, desc, eq } from 'drizzle-orm';
-import { db, getDatabaseUrl } from '../../db/index.ts';
+import { db, getDatabaseUrl, withDbRetry } from '../../db/index.ts';
 import {
   announcements,
   classArms,
@@ -27,25 +27,32 @@ const contactRateMap = new Map<string, number[]>();
 
 router.get('/site-data', async (_req, res) => {
   try {
-    await ensureSeeded();
+    let rows = await withDbRetry(() => db.select().from(siteSettings));
+    if (rows.length < 6) {
+      await ensureSeeded();
+      rows = await withDbRetry(() => db.select().from(siteSettings));
+    }
 
-    const rows = await db.select().from(siteSettings);
-    const activeAnnouncements = await db
-      .select()
-      .from(announcements)
-      .where(eq(announcements.isActive, true))
-      .orderBy(desc(announcements.createdAt));
+    const activeAnnouncements = await withDbRetry(() =>
+      db
+        .select()
+        .from(announcements)
+        .where(eq(announcements.isActive, true))
+        .orderBy(desc(announcements.createdAt))
+    );
 
-    const activeClassArms = await db
-      .select({
-        id: classArms.id,
-        classLevel: classArms.classLevel,
-        armName: classArms.armName,
-        displayName: classArms.displayName,
-      })
-      .from(classArms)
-      .where(eq(classArms.isActive, true))
-      .orderBy(asc(classArms.classLevel), asc(classArms.armName));
+    const activeClassArms = await withDbRetry(() =>
+      db
+        .select({
+          id: classArms.id,
+          classLevel: classArms.classLevel,
+          armName: classArms.armName,
+          displayName: classArms.displayName,
+        })
+        .from(classArms)
+        .where(eq(classArms.isActive, true))
+        .orderBy(asc(classArms.classLevel), asc(classArms.armName))
+    );
 
     // Deduplicate classLevel + armName pairs for clean public display
     const seenClassArm = new Set<string>();
