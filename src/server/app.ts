@@ -22,6 +22,11 @@ export function createApiApp() {
     res.json({
       status: 'ok',
       databaseConfigured: isDatabaseConfigured(),
+      envDetected: {
+        hasDatabaseUrl: Boolean(process.env.DATABASE_URL?.trim()),
+        hasPostgresUrl: Boolean(process.env.POSTGRES_URL?.trim()),
+        hasSqlHost: Boolean(process.env.SQL_HOST?.trim()),
+      },
     });
   });
 

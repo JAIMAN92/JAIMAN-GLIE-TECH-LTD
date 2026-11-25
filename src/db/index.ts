@@ -12,6 +12,8 @@ export function getDatabaseUrl(): string {
     process.env.POSTGRES_URL?.trim() ||
     process.env.POSTGRES_PRISMA_URL?.trim() ||
     process.env.SUPABASE_DB_URL?.trim() ||
+    process.env.POSTGRES_URL_NON_POOLING?.trim() ||
+    process.env.DATABASE_URL_UNPOOLED?.trim() ||
     '';
   return raw.replace(/^["']|["']$/g, '').trim();
 }
@@ -20,13 +22,25 @@ export function isDatabaseConfigured(): boolean {
   return Boolean(getDatabaseUrl() || process.env.SQL_HOST?.trim());
 }
 
+function normalizePostgresConnectionString(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.searchParams.has('sslmode')) {
+      parsed.searchParams.delete('sslmode');
+    }
+    return parsed.toString();
+  } catch {
+    return rawUrl;
+  }
+}
+
 export const createPool = () => {
   if (!global._postgresPool) {
     const databaseUrl = getDatabaseUrl();
 
     global._postgresPool = databaseUrl
       ? new Pool({
-          connectionString: databaseUrl,
+          connectionString: normalizePostgresConnectionString(databaseUrl),
           ssl: { rejectUnauthorized: false },
           max: 10,
           connectionTimeoutMillis: 15000,

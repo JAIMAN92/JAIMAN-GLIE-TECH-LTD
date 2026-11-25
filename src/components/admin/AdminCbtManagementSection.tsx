@@ -4,13 +4,14 @@ import {
   Download,
   Edit3,
   Eye,
-  FileSpreadsheet,
   Plus,
   Printer,
   Trash2,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
+import { BulkQuestionsUploadModal } from './BulkQuestionsUploadModal.tsx';
 
 interface SubjectRow {
   id: number;
@@ -150,8 +151,6 @@ export function AdminCbtManagementSection({
     marks: '1',
   });
   const [showQImportModal, setShowQImportModal] = useState(false);
-  const [qImportSubjectId, setQImportSubjectId] = useState('');
-  const [qCsvText, setQCsvText] = useState('');
 
   // Examination state
   const [showExamModal, setShowExamModal] = useState(false);
@@ -355,44 +354,6 @@ export function AdminCbtManagementSection({
     loadAll();
   };
 
-  const handleImportQuestions = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr('');
-    setMsg('');
-    const res = await fetch('/api/admin/questions/import', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        subjectId: Number(qImportSubjectId),
-        csvText: qCsvText,
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      setErr(json.error || 'Question import failed.');
-      return;
-    }
-    setShowQImportModal(false);
-    setQCsvText('');
-    setMsg(`Imported ${json.imported} question(s).`);
-    loadAll();
-  };
-
-  const downloadQuestionTemplate = () => {
-    const sample =
-      'topic,questionText,optionA,optionB,optionC,optionD,correctOption,marks\nAlgebra,"What is 2x + 4 = 10?",2,3,4,5,B,2\n';
-    const blob = new Blob([sample], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'question_import_template.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   // Examination Handlers
   const openExamModal = (ex?: ExamRow) => {
     setErr('');
@@ -583,7 +544,7 @@ export function AdminCbtManagementSection({
             </h2>
             <p className="text-sm text-slate-600">
               Create subjects, organize multiple-choice questions by topic, and
-              import question sheets via CSV.
+              bulk-upload questions and answers via Excel, CSV, Word text, or JSON.
             </p>
           </div>
           <div className="flex flex-wrap gap-2.5">
@@ -591,21 +552,20 @@ export function AdminCbtManagementSection({
               type="button"
               disabled={subjects.length === 0}
               onClick={() => {
-                setQImportSubjectId(
-                  filterSubjectId || (subjects[0] ? String(subjects[0].id) : '')
-                );
+                setErr('');
+                setMsg('');
                 setShowQImportModal(true);
               }}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#123B72] text-[#123B72] text-sm font-semibold hover:bg-[#123B72] hover:text-white"
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#123B72] text-[#123B72] text-sm font-semibold hover:bg-[#123B72] hover:text-white disabled:opacity-50"
             >
-              <FileSpreadsheet className="w-4 h-4" />
-              Import Questions CSV
+              <Upload className="w-4 h-4" />
+              Bulk Upload Q&amp;A
             </button>
             <button
               type="button"
               disabled={subjects.length === 0}
               onClick={() => openQuestionModal()}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold hover:bg-[#d1327c]"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold hover:bg-[#d1327c] disabled:opacity-50"
             >
               <Plus className="w-4 h-4" />
               Add Question
@@ -916,89 +876,20 @@ export function AdminCbtManagementSection({
           </div>
         )}
 
-        {/* Import Questions CSV Modal */}
+        {/* Bulk Questions & Answers Upload Modal */}
         {showQImportModal && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-display text-lg font-bold text-[#123B72]">
-                  Import Questions via CSV
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setShowQImportModal(false)}
-                >
-                  <X className="w-5 h-5 text-slate-400" />
-                </button>
-              </div>
-              <div className="flex items-center justify-between text-xs bg-[#F5F8FC] p-3 rounded-lg border border-slate-200">
-                <span>
-                  Columns: topic, questionText, optionA..D, correctOption, marks
-                </span>
-                <button
-                  type="button"
-                  onClick={downloadQuestionTemplate}
-                  className="inline-flex items-center gap-1 font-semibold text-[#1769AA]"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Template
-                </button>
-              </div>
-              <form onSubmit={handleImportQuestions} className="space-y-3.5">
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Subject *
-                  </label>
-                  <select
-                    required
-                    value={qImportSubjectId}
-                    onChange={(e) => setQImportSubjectId(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                  >
-                    {subjects.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <input
-                    type="file"
-                    accept=".csv,text/csv"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) f.text().then(setQCsvText);
-                    }}
-                    className="block w-full text-xs text-slate-600 mb-2"
-                  />
-                  <textarea
-                    rows={6}
-                    required
-                    value={qCsvText}
-                    onChange={(e) => setQCsvText(e.target.value)}
-                    placeholder="topic,questionText,optionA,optionB,optionC,optionD,correctOption,marks"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-mono-tabular"
-                  />
-                </div>
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowQImportModal(false)}
-                    className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold"
-                  >
-                    Import Questions
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
+          <BulkQuestionsUploadModal
+            token={token}
+            subjects={subjects}
+            exams={exams}
+            initialSubjectId={filterSubjectId}
+            onClose={() => setShowQImportModal(false)}
+            onSuccess={(summaryMsg) => {
+              setShowQImportModal(false);
+              setMsg(summaryMsg);
+              loadAll();
+            }}
+          />
         )}
       </div>
     );

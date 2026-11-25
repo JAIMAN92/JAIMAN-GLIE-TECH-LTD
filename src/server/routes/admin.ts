@@ -1336,6 +1336,156 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
   }
 });
 
+router.post('/questions/bulk', async (req: AdminRequest, res) => {
+  try {
+    const { subjectId, examId, items } = req.body ?? {};
+    const targetSubjectId = Number(subjectId);
+
+    if (!Number.isInteger(targetSubjectId) || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({
+        error: 'Target subject and at least one parsed question item are required.',
+      });
+    }
+
+    if (items.length > 500) {
+      return res.status(400).json({
+        error: 'Bulk upload supports up to 500 questions per batch.',
+      });
+    }
+
+    const [subjectRow] = await db
+      .select()
+      .from(subjects)
+      .where(eq(subjects.id, targetSubjectId))
+      .limit(1);
+
+    if (!subjectRow) {
+      return res.status(404).json({ error: 'Selected subject not found.' });
+    }
+
+    let targetExamId: number | null = null;
+    if (examId !== undefined && examId !== null && String(examId).trim() !== '') {
+      const parsedExamId = Number(examId);
+      if (!Number.isInteger(parsedExamId)) {
+        return res.status(400).json({ error: 'Invalid target examination ID.' });
+      }
+      const [examRow] = await db
+        .select()
+        .from(examinations)
+        .where(eq(examinations.id, parsedExamId))
+        .limit(1);
+      if (!examRow) {
+        return res.status(404).json({ error: 'Selected examination not found.' });
+      }
+      if (examRow.subjectId !== targetSubjectId) {
+        return res.status(400).json({
+          error: 'Selected examination belongs to a different subject.',
+        });
+      }
+      targetExamId = parsedExamId;
+    }
+
+    const validRows: Array<{
+      subjectId: number;
+      topic: string;
+      questionText: string;
+      optionA: string;
+      optionB: string;
+      optionC: string;
+      optionD: string;
+      correctOption: string;
+      marks: number;
+    }> = [];
+    const errors: string[] = [];
+
+    items.forEach((rawItem: Record<string, unknown>, index: number) => {
+      const questionText = String(rawItem?.questionText ?? '').trim();
+      const optionA = String(rawItem?.optionA ?? '').trim();
+      const optionB = String(rawItem?.optionB ?? '').trim();
+      const optionC = String(rawItem?.optionC ?? '').trim();
+      const optionD = String(rawItem?.optionD ?? '').trim();
+      const correctOption = String(rawItem?.correctOption ?? '')
+        .trim()
+        .toUpperCase();
+      const topic = String(rawItem?.topic ?? '').trim() || 'General';
+      const marks = Math.max(1, Math.min(100, Number(rawItem?.marks) || 1));
+
+      if (
+        !questionText ||
+        !optionA ||
+        !optionB ||
+        !optionC ||
+        !optionD ||
+        !['A', 'B', 'C', 'D'].includes(correctOption)
+      ) {
+        errors.push(`Item #${index + 1}: missing required options or invalid answer key`);
+        return;
+      }
+
+      validRows.push({
+        subjectId: targetSubjectId,
+        topic: topic.slice(0, 120),
+        questionText: questionText.slice(0, 4000),
+        optionA: optionA.slice(0, 1000),
+        optionB: optionB.slice(0, 1000),
+        optionC: optionC.slice(0, 1000),
+        optionD: optionD.slice(0, 1000),
+        correctOption,
+        marks,
+      });
+    });
+
+    if (validRows.length === 0) {
+      return res.status(400).json({
+        error: 'No valid questions found in upload batch.',
+        errors,
+      });
+    }
+
+    const inserted = await db.insert(questions).values(validRows).returning();
+
+    let attachedCount = 0;
+    if (targetExamId && inserted.length > 0) {
+      const existingLinks = await db
+        .select({ sortOrder: examQuestions.sortOrder })
+        .from(examQuestions)
+        .where(eq(examQuestions.examId, targetExamId));
+      const baseOrder = existingLinks.reduce(
+        (max, row) => Math.max(max, row.sortOrder),
+        0
+      );
+
+      await db.insert(examQuestions).values(
+        inserted.map((q, idx) => ({
+          examId: targetExamId!,
+          questionId: q.id,
+          sortOrder: baseOrder + idx + 1,
+        }))
+      );
+      attachedCount = inserted.length;
+    }
+
+    await logAdminActivity({
+      adminId: req.admin!.id,
+      adminLabel: req.admin!.username,
+      action: 'BULK_UPLOAD_QUESTIONS',
+      targetType: 'question',
+      targetDetails: `Uploaded ${inserted.length} question(s) into ${subjectRow.name}${
+        attachedCount > 0 ? ` and attached to exam #${targetExamId}` : ''
+      }`,
+    });
+
+    res.status(201).json({
+      imported: inserted.length,
+      attachedCount,
+      errors,
+    });
+  } catch (error) {
+    console.error('Bulk upload questions error:', error);
+    res.status(500).json({ error: 'Bulk questions upload failed.' });
+  }
+});
+
 router.put('/questions/:id', async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
