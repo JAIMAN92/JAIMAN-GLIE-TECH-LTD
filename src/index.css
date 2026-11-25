@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Poppins', system-ui, -apple-system, sans-serif;
+  --font-display: 'Poppins', system-ui, -apple-system, sans-serif;
+}
+
+:root {
+  --brand-deep-blue: #123B72;
+  --brand-blue: #1769AA;
+  --brand-pink: #E83E8C;
+  --brand-gold: #D4AF37;
+  --brand-cyan: #20C4D8;
+  --brand-bg: #F5F8FC;
+  --brand-text: #1E293B;
+}
+
+@layer base {
+  html,
+  body {
+    font-family: 'Poppins', system-ui, -apple-system, sans-serif;
+    background-color: var(--brand-bg);
+    color: var(--brand-text);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  button,
+  input,
+  select,
+  textarea,
+  .font-display {
+    font-family: 'Poppins', system-ui, -apple-system, sans-serif;
+  }
+
+  .font-mono-tabular {
+    font-family: 'Poppins', system-ui, -apple-system, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+}
