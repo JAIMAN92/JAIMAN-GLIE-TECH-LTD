@@ -94,10 +94,13 @@ export interface SiteData {
   classArms?: ClassArmItem[];
 }
 
+export type AdminRole = 'super_admin' | 'data_entry';
+
 export interface SafeAdmin {
   id: number;
   username: string;
   email: string;
   fullName: string;
+  role: AdminRole;
   mustChangePassword: boolean;
 }

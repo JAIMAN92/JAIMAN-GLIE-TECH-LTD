@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, like, sql } from 'drizzle-orm';
 import { db, getDatabaseUrl, isDatabaseConfigured } from '../../db/index.ts';
 import {
   adminActivityLogs,
@@ -20,7 +20,9 @@ import {
 import {
   type AdminRequest,
   logAdminActivity,
+  normalizeAdminRole,
   requireAdmin,
+  requireSuperAdmin,
 } from '../authMiddleware.ts';
 import {
   escapeCsvCell,
@@ -35,7 +37,7 @@ const router = Router();
 router.use(requireAdmin);
 
 // 1. DASHBOARD OVERVIEW
-router.get('/overview', async (_req: AdminRequest, res) => {
+router.get('/overview', requireSuperAdmin, async (_req: AdminRequest, res) => {
   try {
     const [
       [{ value: totalSchools }],
@@ -134,7 +136,7 @@ router.get('/overview', async (_req: AdminRequest, res) => {
 });
 
 // 2. WEBSITE MANAGEMENT & 9. WEBSITE SETTINGS
-router.put('/site-settings/:sectionKey', async (req: AdminRequest, res) => {
+router.put('/site-settings/:sectionKey', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const { sectionKey } = req.params;
     const allowed = [
@@ -184,7 +186,7 @@ router.put('/site-settings/:sectionKey', async (req: AdminRequest, res) => {
   }
 });
 
-router.get('/announcements', async (_req: AdminRequest, res) => {
+router.get('/announcements', requireSuperAdmin, async (_req: AdminRequest, res) => {
   try {
     const rows = await db
       .select()
@@ -197,7 +199,7 @@ router.get('/announcements', async (_req: AdminRequest, res) => {
   }
 });
 
-router.post('/announcements', async (req: AdminRequest, res) => {
+router.post('/announcements', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const { title, message, targetPage, isActive } = req.body ?? {};
     if (
@@ -238,7 +240,7 @@ router.post('/announcements', async (req: AdminRequest, res) => {
   }
 });
 
-router.put('/announcements/:id', async (req: AdminRequest, res) => {
+router.put('/announcements/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     const { title, message, targetPage, isActive } = req.body ?? {};
@@ -263,7 +265,7 @@ router.put('/announcements/:id', async (req: AdminRequest, res) => {
   }
 });
 
-router.delete('/announcements/:id', async (req: AdminRequest, res) => {
+router.delete('/announcements/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     await db.delete(announcements).where(eq(announcements.id, id));
@@ -275,7 +277,7 @@ router.delete('/announcements/:id', async (req: AdminRequest, res) => {
 });
 
 // 3. SCHOOL MANAGEMENT
-router.get('/schools', async (_req: AdminRequest, res) => {
+router.get('/schools', async (req: AdminRequest, res) => {
   try {
     const rows = await db
       .select({
@@ -297,8 +299,13 @@ router.get('/schools', async (_req: AdminRequest, res) => {
       .groupBy(schools.id)
       .orderBy(desc(schools.createdAt));
 
+    const isSuper = req.admin?.role === 'super_admin';
     res.json({
-      schools: rows.map((r) => ({ ...r, studentCount: Number(r.studentCount) })),
+      schools: rows.map((r) => ({
+        ...r,
+        accessCode: isSuper ? r.accessCode : '',
+        studentCount: Number(r.studentCount),
+      })),
     });
   } catch (error) {
     console.error('Fetch schools error:', error);
@@ -306,7 +313,7 @@ router.get('/schools', async (_req: AdminRequest, res) => {
   }
 });
 
-router.post('/schools', async (req: AdminRequest, res) => {
+router.post('/schools', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const {
       name,
@@ -376,7 +383,7 @@ router.post('/schools', async (req: AdminRequest, res) => {
   }
 });
 
-router.put('/schools/:id', async (req: AdminRequest, res) => {
+router.put('/schools/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     const {
@@ -434,7 +441,7 @@ router.put('/schools/:id', async (req: AdminRequest, res) => {
   }
 });
 
-router.patch('/schools/:id/toggle', async (req: AdminRequest, res) => {
+router.patch('/schools/:id/toggle', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     const [existing] = await db
@@ -467,7 +474,7 @@ router.patch('/schools/:id/toggle', async (req: AdminRequest, res) => {
   }
 });
 
-router.get('/schools/:id/records', async (req: AdminRequest, res) => {
+router.get('/schools/:id/records', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const schoolId = Number(req.params.id);
     const records = await db
@@ -499,7 +506,7 @@ router.get('/schools/:id/records', async (req: AdminRequest, res) => {
   }
 });
 
-router.delete('/schools/:id', async (req: AdminRequest, res) => {
+router.delete('/schools/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     await db.delete(schools).where(eq(schools.id, id));
@@ -827,14 +834,51 @@ router.get('/students', async (req: AdminRequest, res) => {
   }
 });
 
+function buildExamNumberPrefix(schoolCode?: string | null): string {
+  const cleanCode = (schoolCode || 'JGT')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 8);
+  const code = cleanCode || 'JGT';
+  const year = new Date().getFullYear();
+  return `${code}-${year}-`;
+}
+
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function getNextExamNumberSequence(prefix: string): Promise<number> {
+  const existing = await db
+    .select({ examNumber: students.examNumber })
+    .from(students)
+    .where(like(students.examNumber, `${prefix}%`));
+
+  const pattern = new RegExp(`^${escapeRegExp(prefix)}(\\d+)$`, 'i');
+  let maxSeq = 0;
+  for (const row of existing) {
+    const match = row.examNumber.trim().match(pattern);
+    if (match) {
+      const parsed = Number.parseInt(match[1], 10);
+      if (Number.isFinite(parsed) && parsed > maxSeq) {
+        maxSeq = parsed;
+      }
+    }
+  }
+  return maxSeq + 1;
+}
+
+function formatExamNumber(prefix: string, seq: number): string {
+  return `${prefix}${String(seq).padStart(3, '0')}`;
+}
+
 router.post('/students', async (req: AdminRequest, res) => {
   try {
     const { schoolId, examNumber, fullName, classLevel, arm, passcode } =
       req.body ?? {};
     if (
       !Number.isInteger(Number(schoolId)) ||
-      typeof examNumber !== 'string' ||
-      !examNumber.trim() ||
       typeof fullName !== 'string' ||
       !fullName.trim() ||
       typeof classLevel !== 'string' ||
@@ -844,24 +888,77 @@ router.post('/students', async (req: AdminRequest, res) => {
     ) {
       return res.status(400).json({
         error:
-          'School, Examination Number, Full Name, Class Level, and Passcode (min 4 characters) are required.',
+          'School, Full Name, Class Level, and Passcode (min 4 characters) are required.',
       });
     }
 
-    const cleanArm = typeof arm === 'string' ? arm.trim() : '';
+    const numericSchoolId = Number(schoolId);
+    const [school] = await db
+      .select({ id: schools.id, code: schools.code })
+      .from(schools)
+      .where(eq(schools.id, numericSchoolId))
+      .limit(1);
 
-    const [created] = await db
-      .insert(students)
-      .values({
-        schoolId: Number(schoolId),
-        examNumber: examNumber.trim().toUpperCase(),
-        fullName: fullName.trim(),
-        classLevel: classLevel.trim().toUpperCase(),
-        arm: cleanArm,
-        passcodeHash: hashPassword(passcode.trim()),
-        isActive: true,
-      })
-      .returning();
+    if (!school) {
+      return res.status(404).json({ error: 'Selected school was not found.' });
+    }
+
+    const cleanArm = typeof arm === 'string' ? arm.trim() : '';
+    const manualExamNumber =
+      typeof examNumber === 'string' ? examNumber.trim().toUpperCase() : '';
+
+    let created: typeof students.$inferSelect | undefined;
+
+    if (manualExamNumber) {
+      [created] = await db
+        .insert(students)
+        .values({
+          schoolId: numericSchoolId,
+          examNumber: manualExamNumber,
+          fullName: fullName.trim(),
+          classLevel: classLevel.trim().toUpperCase(),
+          arm: cleanArm,
+          passcodeHash: hashPassword(passcode.trim()),
+          isActive: true,
+        })
+        .returning();
+    } else {
+      const prefix = buildExamNumberPrefix(school.code);
+      let nextSeq = await getNextExamNumberSequence(prefix);
+      const passcodeHash = hashPassword(passcode.trim());
+
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const candidateExamNumber = formatExamNumber(prefix, nextSeq + attempt);
+        try {
+          [created] = await db
+            .insert(students)
+            .values({
+              schoolId: numericSchoolId,
+              examNumber: candidateExamNumber,
+              fullName: fullName.trim(),
+              classLevel: classLevel.trim().toUpperCase(),
+              arm: cleanArm,
+              passcodeHash,
+              isActive: true,
+            })
+            .returning();
+          break;
+        } catch (insertErr: unknown) {
+          const pgErr = insertErr as { code?: string; cause?: { code?: string } };
+          const code = pgErr?.code || pgErr?.cause?.code;
+          if (code === '23505' && attempt < 5) {
+            continue;
+          }
+          throw insertErr;
+        }
+      }
+    }
+
+    if (!created) {
+      return res.status(500).json({
+        error: 'Unable to generate a unique Examination Number. Please try again.',
+      });
+    }
 
     await logAdminActivity({
       adminId: req.admin!.id,
@@ -905,11 +1002,22 @@ router.post('/students/import', async (req: AdminRequest, res) => {
         .json({ error: 'Target school and CSV data are required.' });
     }
 
+    const numericSchoolId = Number(schoolId);
+    const [school] = await db
+      .select({ id: schools.id, code: schools.code })
+      .from(schools)
+      .where(eq(schools.id, numericSchoolId))
+      .limit(1);
+
+    if (!school) {
+      return res.status(404).json({ error: 'Selected school was not found.' });
+    }
+
     const rows = parseCsvRows(csvText);
     if (rows.length < 2) {
       return res.status(400).json({
         error:
-          'CSV must contain a header row (examNumber,fullName,classLevel,arm,passcode) and at least one student row.',
+          'CSV must contain a header row (e.g. fullName,classLevel,arm,passcode) and at least one student row.',
       });
     }
 
@@ -930,45 +1038,71 @@ router.post('/students/import', async (req: AdminRequest, res) => {
       ['passcode', 'password', 'pin'].includes(h)
     );
 
-    if (examIdx === -1 || nameIdx === -1 || classIdx === -1 || passIdx === -1) {
+    if (nameIdx === -1 || classIdx === -1 || passIdx === -1) {
       return res.status(400).json({
         error:
-          'CSV header must include: examNumber, fullName, classLevel, passcode (and optional arm).',
+          'CSV header must include: fullName, classLevel, passcode (arm and examNumber are optional — exam numbers are generated automatically if omitted).',
       });
     }
 
+    const prefix = buildExamNumberPrefix(school.code);
+    let nextSeq = await getNextExamNumberSequence(prefix);
+    const existingRows = await db
+      .select({ examNumber: students.examNumber })
+      .from(students);
+    const usedExamNumbers = new Set(
+      existingRows.map((r) => r.examNumber.trim().toUpperCase())
+    );
+
     let imported = 0;
+    let autoGeneratedCount = 0;
     const errors: string[] = [];
 
     for (let i = 1; i < rows.length; i++) {
       const cols = rows[i];
-      const examNumber = (cols[examIdx] ?? '').trim().toUpperCase();
+      const providedExamNumber =
+        examIdx >= 0 ? (cols[examIdx] ?? '').trim().toUpperCase() : '';
       const fullName = (cols[nameIdx] ?? '').trim();
       const classLevel = (cols[classIdx] ?? '').trim().toUpperCase();
       const arm = armIdx >= 0 ? (cols[armIdx] ?? '').trim() : '';
       const passcode = (cols[passIdx] ?? '').trim();
 
-      if (!examNumber || !fullName || !classLevel || passcode.length < 4) {
+      if (!fullName || !classLevel || passcode.length < 4) {
         errors.push(`Row ${i + 1}: missing fields or passcode < 4 chars`);
         continue;
       }
 
+      let finalExamNumber = providedExamNumber;
+      let wasAutoGenerated = false;
+      if (!finalExamNumber) {
+        while (usedExamNumbers.has(formatExamNumber(prefix, nextSeq))) {
+          nextSeq += 1;
+        }
+        finalExamNumber = formatExamNumber(prefix, nextSeq);
+        nextSeq += 1;
+        wasAutoGenerated = true;
+      }
+
+      if (usedExamNumbers.has(finalExamNumber)) {
+        errors.push(`Row ${i + 1}: duplicate exam number ${finalExamNumber}`);
+        continue;
+      }
+
       try {
-        await db
-          .insert(students)
-          .values({
-            schoolId: Number(schoolId),
-            examNumber,
-            fullName,
-            classLevel,
-            arm,
-            passcodeHash: hashPassword(passcode),
-            isActive: true,
-          })
-          .onConflictDoNothing({ target: students.examNumber });
+        await db.insert(students).values({
+          schoolId: numericSchoolId,
+          examNumber: finalExamNumber,
+          fullName,
+          classLevel,
+          arm,
+          passcodeHash: hashPassword(passcode),
+          isActive: true,
+        });
+        usedExamNumbers.add(finalExamNumber);
         imported++;
+        if (wasAutoGenerated) autoGeneratedCount++;
       } catch {
-        errors.push(`Row ${i + 1}: duplicate or invalid exam number ${examNumber}`);
+        errors.push(`Row ${i + 1}: duplicate or invalid exam number ${finalExamNumber}`);
       }
     }
 
@@ -977,10 +1111,10 @@ router.post('/students/import', async (req: AdminRequest, res) => {
       adminLabel: req.admin!.username,
       action: 'IMPORT_STUDENTS',
       targetType: 'student',
-      targetDetails: `Imported ${imported} student record(s)`,
+      targetDetails: `Imported ${imported} student record(s) (${autoGeneratedCount} auto-generated exam numbers)`,
     });
 
-    res.json({ imported, errors });
+    res.json({ imported, autoGeneratedCount, errors });
   } catch (error) {
     console.error('Import students error:', error);
     res.status(500).json({ error: 'Student CSV import failed.' });
@@ -1100,7 +1234,7 @@ router.get('/subjects', async (_req: AdminRequest, res) => {
   }
 });
 
-router.post('/subjects', async (req: AdminRequest, res) => {
+router.post('/subjects', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const { name, code, description } = req.body ?? {};
     if (
@@ -1132,7 +1266,7 @@ router.post('/subjects', async (req: AdminRequest, res) => {
   }
 });
 
-router.delete('/subjects/:id', async (req: AdminRequest, res) => {
+router.delete('/subjects/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     await db.delete(subjects).where(eq(subjects.id, id));
@@ -1620,7 +1754,7 @@ router.get('/examinations', async (_req: AdminRequest, res) => {
   }
 });
 
-router.post('/examinations', async (req: AdminRequest, res) => {
+router.post('/examinations', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const {
       title,
@@ -1713,7 +1847,7 @@ router.post('/examinations', async (req: AdminRequest, res) => {
   }
 });
 
-router.put('/examinations/:id', async (req: AdminRequest, res) => {
+router.put('/examinations/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     const {
@@ -1790,7 +1924,7 @@ router.put('/examinations/:id', async (req: AdminRequest, res) => {
   }
 });
 
-router.patch('/examinations/:id/toggle', async (req: AdminRequest, res) => {
+router.patch('/examinations/:id/toggle', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     const [existing] = await db
@@ -1813,7 +1947,7 @@ router.patch('/examinations/:id/toggle', async (req: AdminRequest, res) => {
   }
 });
 
-router.put('/examinations/:id/assignments', async (req: AdminRequest, res) => {
+router.put('/examinations/:id/assignments', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const examId = Number(req.params.id);
     const { assignments } = req.body ?? {};
@@ -1842,7 +1976,7 @@ router.put('/examinations/:id/assignments', async (req: AdminRequest, res) => {
   }
 });
 
-router.get('/examinations/:id/submissions', async (req: AdminRequest, res) => {
+router.get('/examinations/:id/submissions', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const examId = Number(req.params.id);
     const rows = await db
@@ -1875,7 +2009,7 @@ router.get('/examinations/:id/submissions', async (req: AdminRequest, res) => {
   }
 });
 
-router.delete('/examinations/:id', async (req: AdminRequest, res) => {
+router.delete('/examinations/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     await db.delete(examinations).where(eq(examinations.id, id));
@@ -1887,7 +2021,7 @@ router.delete('/examinations/:id', async (req: AdminRequest, res) => {
 });
 
 // 7. RESULTS MANAGEMENT
-router.get('/results', async (req: AdminRequest, res) => {
+router.get('/results', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const schoolId = req.query.schoolId ? Number(req.query.schoolId) : null;
     const subjectId = req.query.subjectId ? Number(req.query.subjectId) : null;
@@ -1952,6 +2086,7 @@ router.get('/results', async (req: AdminRequest, res) => {
 
 router.patch(
   '/examinations/:id/publish-results',
+  requireSuperAdmin,
   async (req: AdminRequest, res) => {
     try {
       const id = Number(req.params.id);
@@ -1984,10 +2119,11 @@ router.patch(
   }
 );
 
-router.get('/results/export', async (req: AdminRequest, res) => {
+router.get('/results/export', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const examId = req.query.examId ? Number(req.query.examId) : null;
     const schoolId = req.query.schoolId ? Number(req.query.schoolId) : null;
+    const subjectId = req.query.subjectId ? Number(req.query.subjectId) : null;
     const classLevel =
       typeof req.query.classLevel === 'string' && req.query.classLevel.trim()
         ? req.query.classLevel.trim().toUpperCase()
@@ -2000,6 +2136,7 @@ router.get('/results/export', async (req: AdminRequest, res) => {
     const conditions = [eq(examAttempts.status, 'submitted')];
     if (examId) conditions.push(eq(examinations.id, examId));
     if (schoolId) conditions.push(eq(students.schoolId, schoolId));
+    if (subjectId) conditions.push(eq(examinations.subjectId, subjectId));
     if (classLevel) conditions.push(eq(students.classLevel, classLevel));
 
     const rows = await db
@@ -2075,19 +2212,20 @@ router.get('/results/export', async (req: AdminRequest, res) => {
       ),
     ];
 
+    const dateTag = new Date().toISOString().slice(0, 10);
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader(
       'Content-Disposition',
-      'attachment; filename="jaiman_cbt_results.csv"'
+      `attachment; filename="jaiman_cbt_results_${dateTag}.csv"`
     );
-    res.send(csvLines.join('\n'));
+    res.send(`\uFEFF${csvLines.join('\n')}`);
   } catch (error) {
     console.error('Export results error:', error);
     res.status(500).json({ error: 'Unable to export results.' });
   }
 });
 
-router.delete('/results/:attemptId', async (req: AdminRequest, res) => {
+router.delete('/results/:attemptId', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const attemptId = Number(req.params.attemptId);
     await db.delete(examAttempts).where(eq(examAttempts.id, attemptId));
@@ -2099,7 +2237,7 @@ router.delete('/results/:attemptId', async (req: AdminRequest, res) => {
 });
 
 // 8. CONTACT ENQUIRIES
-router.get('/enquiries', async (_req: AdminRequest, res) => {
+router.get('/enquiries', requireSuperAdmin, async (_req: AdminRequest, res) => {
   try {
     const rows = await db
       .select()
@@ -2112,7 +2250,7 @@ router.get('/enquiries', async (_req: AdminRequest, res) => {
   }
 });
 
-router.patch('/enquiries/:id', async (req: AdminRequest, res) => {
+router.patch('/enquiries/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     const { isRead, status, adminNotes } = req.body ?? {};
@@ -2139,7 +2277,7 @@ router.patch('/enquiries/:id', async (req: AdminRequest, res) => {
   }
 });
 
-router.delete('/enquiries/:id', async (req: AdminRequest, res) => {
+router.delete('/enquiries/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     await db.delete(contactEnquiries).where(eq(contactEnquiries.id, id));
@@ -2149,6 +2287,269 @@ router.delete('/enquiries/:id', async (req: AdminRequest, res) => {
     res.status(500).json({ error: 'Unable to delete enquiry.' });
   }
 });
+
+// 9. ADMIN ACCOUNTS MANAGEMENT (Super Admin Only)
+router.get('/admins', requireSuperAdmin, async (_req: AdminRequest, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: admins.id,
+        username: admins.username,
+        email: admins.email,
+        fullName: admins.fullName,
+        role: admins.role,
+        isActive: admins.isActive,
+        mustChangePassword: admins.mustChangePassword,
+        createdAt: admins.createdAt,
+      })
+      .from(admins)
+      .orderBy(asc(admins.id));
+
+    res.json({
+      admins: rows.map((row) => ({
+        ...row,
+        role: normalizeAdminRole(row.role),
+      })),
+    });
+  } catch (error) {
+    console.error('Fetch admins error:', error);
+    res.status(500).json({ error: 'Failed to load administrator accounts.' });
+  }
+});
+
+router.post('/admins', requireSuperAdmin, async (req: AdminRequest, res) => {
+  try {
+    const { fullName, username, email, password, role, mustChangePassword } =
+      req.body ?? {};
+
+    if (
+      typeof fullName !== 'string' ||
+      fullName.trim().length < 2 ||
+      typeof username !== 'string' ||
+      username.trim().length < 3 ||
+      typeof email !== 'string' ||
+      !isValidEmail(email) ||
+      typeof password !== 'string' ||
+      password.length < 8
+    ) {
+      return res.status(400).json({
+        error:
+          'Provide full name (min 2 chars), username (min 3 chars), valid email, and password (min 8 characters).',
+      });
+    }
+
+    const cleanUsername = username.trim().toLowerCase();
+    if (!/^[a-z0-9._-]+$/.test(cleanUsername)) {
+      return res.status(400).json({
+        error:
+          'Username may only contain letters, numbers, dots, underscores, or hyphens.',
+      });
+    }
+
+    const assignedRole =
+      role === 'super_admin' ? 'super_admin' : 'data_entry';
+
+    const [created] = await db
+      .insert(admins)
+      .values({
+        fullName: fullName.trim(),
+        username: cleanUsername,
+        email: email.trim().toLowerCase(),
+        role: assignedRole,
+        isActive: true,
+        passwordHash: hashPassword(password),
+        mustChangePassword: Boolean(mustChangePassword),
+      })
+      .returning();
+
+    await logAdminActivity({
+      adminId: req.admin!.id,
+      adminLabel: req.admin!.username,
+      action: 'CREATE_ADMIN_ACCOUNT',
+      targetType: 'admin',
+      targetDetails: `Registered ${created.username} (${assignedRole === 'data_entry' ? 'Students & Questions Only' : 'Full Administrator'})`,
+    });
+
+    res.status(201).json({
+      admin: {
+        id: created.id,
+        username: created.username,
+        email: created.email,
+        fullName: created.fullName,
+        role: normalizeAdminRole(created.role),
+        isActive: created.isActive,
+        mustChangePassword: created.mustChangePassword,
+        createdAt: created.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error('Register sub-admin error:', error);
+    res.status(400).json({
+      error: 'Unable to register administrator. Username may already be in use.',
+    });
+  }
+});
+
+router.patch(
+  '/admins/:id/toggle',
+  requireSuperAdmin,
+  async (req: AdminRequest, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id)) {
+        return res.status(400).json({ error: 'Invalid administrator ID.' });
+      }
+      if (id === req.admin!.id) {
+        return res
+          .status(400)
+          .json({ error: 'You cannot deactivate your own active account.' });
+      }
+
+      const [existing] = await db
+        .select()
+        .from(admins)
+        .where(eq(admins.id, id))
+        .limit(1);
+      if (!existing) {
+        return res.status(404).json({ error: 'Administrator account not found.' });
+      }
+
+      const nextActive = !existing.isActive;
+      const [updated] = await db
+        .update(admins)
+        .set({ isActive: nextActive, updatedAt: new Date() })
+        .where(eq(admins.id, id))
+        .returning();
+
+      if (!nextActive) {
+        await db
+          .update(adminSessions)
+          .set({ revokedAt: new Date() })
+          .where(eq(adminSessions.adminId, id));
+      }
+
+      await logAdminActivity({
+        adminId: req.admin!.id,
+        adminLabel: req.admin!.username,
+        action: nextActive ? 'ACTIVATE_ADMIN' : 'DEACTIVATE_ADMIN',
+        targetType: 'admin',
+        targetDetails: `${updated.username}`,
+      });
+
+      res.json({
+        admin: {
+          id: updated.id,
+          username: updated.username,
+          email: updated.email,
+          fullName: updated.fullName,
+          role: normalizeAdminRole(updated.role),
+          isActive: updated.isActive,
+          mustChangePassword: updated.mustChangePassword,
+          createdAt: updated.createdAt,
+        },
+      });
+    } catch (error) {
+      console.error('Toggle admin status error:', error);
+      res.status(500).json({ error: 'Unable to update administrator status.' });
+    }
+  }
+);
+
+router.patch(
+  '/admins/:id/role',
+  requireSuperAdmin,
+  async (req: AdminRequest, res) => {
+    try {
+      const id = Number(req.params.id);
+      const { role } = req.body ?? {};
+      if (!Number.isInteger(id)) {
+        return res.status(400).json({ error: 'Invalid administrator ID.' });
+      }
+      if (id === req.admin!.id) {
+        return res
+          .status(400)
+          .json({ error: 'You cannot change your own administrator role.' });
+      }
+      if (role !== 'super_admin' && role !== 'data_entry') {
+        return res.status(400).json({ error: 'Invalid administrator role.' });
+      }
+
+      const [updated] = await db
+        .update(admins)
+        .set({ role, updatedAt: new Date() })
+        .where(eq(admins.id, id))
+        .returning();
+
+      if (!updated) {
+        return res.status(404).json({ error: 'Administrator account not found.' });
+      }
+
+      await logAdminActivity({
+        adminId: req.admin!.id,
+        adminLabel: req.admin!.username,
+        action: 'UPDATE_ADMIN_ROLE',
+        targetType: 'admin',
+        targetDetails: `${updated.username} role set to ${role}`,
+      });
+
+      res.json({
+        admin: {
+          id: updated.id,
+          username: updated.username,
+          email: updated.email,
+          fullName: updated.fullName,
+          role: normalizeAdminRole(updated.role),
+          isActive: updated.isActive,
+          mustChangePassword: updated.mustChangePassword,
+          createdAt: updated.createdAt,
+        },
+      });
+    } catch (error) {
+      console.error('Update admin role error:', error);
+      res.status(500).json({ error: 'Unable to update administrator role.' });
+    }
+  }
+);
+
+router.delete(
+  '/admins/:id',
+  requireSuperAdmin,
+  async (req: AdminRequest, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id)) {
+        return res.status(400).json({ error: 'Invalid administrator ID.' });
+      }
+      if (id === req.admin!.id) {
+        return res
+          .status(400)
+          .json({ error: 'You cannot delete your own active account.' });
+      }
+
+      const [deleted] = await db
+        .delete(admins)
+        .where(eq(admins.id, id))
+        .returning();
+
+      if (!deleted) {
+        return res.status(404).json({ error: 'Administrator account not found.' });
+      }
+
+      await logAdminActivity({
+        adminId: req.admin!.id,
+        adminLabel: req.admin!.username,
+        action: 'DELETE_ADMIN_ACCOUNT',
+        targetType: 'admin',
+        targetDetails: `Removed administrator ${deleted.username}`,
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Delete admin error:', error);
+      res.status(500).json({ error: 'Unable to remove administrator account.' });
+    }
+  }
+);
 
 // 10. ADMIN PROFILE & ACTIVITY LOGS
 router.put('/profile', async (req: AdminRequest, res) => {
@@ -2192,6 +2593,7 @@ router.put('/profile', async (req: AdminRequest, res) => {
         username: updated.username,
         email: updated.email,
         fullName: updated.fullName,
+        role: normalizeAdminRole(updated.role),
         mustChangePassword: updated.mustChangePassword,
       },
     });
@@ -2203,7 +2605,7 @@ router.put('/profile', async (req: AdminRequest, res) => {
   }
 });
 
-router.get('/activity-logs', async (_req: AdminRequest, res) => {
+router.get('/activity-logs', requireSuperAdmin, async (_req: AdminRequest, res) => {
   try {
     const logs = await db
       .select()
@@ -2218,7 +2620,7 @@ router.get('/activity-logs', async (_req: AdminRequest, res) => {
 });
 
 // 11. DATABASE & SUPABASE STATUS
-router.get('/database-status', async (_req: AdminRequest, res) => {
+router.get('/database-status', requireSuperAdmin, async (_req: AdminRequest, res) => {
   try {
     const dbUrl = getDatabaseUrl();
     const isSupabaseUrl =
@@ -2359,7 +2761,7 @@ router.get('/database-status', async (_req: AdminRequest, res) => {
   }
 });
 
-router.post('/database-sync', async (req: AdminRequest, res) => {
+router.post('/database-sync', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     if (!isDatabaseConfigured()) {
       return res.status(503).json({

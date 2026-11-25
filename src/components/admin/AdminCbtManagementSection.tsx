@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   CheckCircle2,
-  Download,
   Edit3,
   Eye,
+  FileSpreadsheet,
+  FileText,
   Plus,
   Printer,
   Trash2,
@@ -12,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { BulkQuestionsUploadModal } from './BulkQuestionsUploadModal.tsx';
+import { exportResultsToPdf } from '../../lib/resultsExport.ts';
 
 interface SubjectRow {
   id: number;
@@ -127,6 +129,7 @@ export function AdminCbtManagementSection({
   const [classArms, setClassArms] = useState<ClassArmOption[]>([]);
   const [results, setResults] = useState<ResultRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [exportingFormat, setExportingFormat] = useState<'csv' | 'pdf' | null>(null);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
@@ -474,22 +477,77 @@ export function AdminCbtManagementSection({
   };
 
   const handleExportResultsCsv = async () => {
-    const params = new URLSearchParams();
-    if (resExamId) params.set('examId', resExamId);
-    if (resSchoolId) params.set('schoolId', resSchoolId);
-    if (resClass) params.set('classLevel', resClass);
-    if (resArm) params.set('arm', resArm);
-    const res = await fetch(`/api/admin/results/export?${params.toString()}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
+    setErr('');
+    setMsg('');
+    if (results.length === 0) {
+      setErr('No examination results match the current filters to export.');
+      return;
+    }
+
+    setExportingFormat('csv');
+    try {
+      const params = new URLSearchParams();
+      if (resExamId) params.set('examId', resExamId);
+      if (resSchoolId) params.set('schoolId', resSchoolId);
+      if (resSubjectId) params.set('subjectId', resSubjectId);
+      if (resClass) params.set('classLevel', resClass);
+      if (resArm) params.set('arm', resArm);
+      const res = await fetch(`/api/admin/results/export?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        setErr('Unable to export CSV results right now.');
+        return;
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
+      const dateTag = new Date().toISOString().slice(0, 10);
+      const fileName = `jaiman_cbt_results_${dateTag}.csv`;
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'jaiman_cbt_results.csv';
+      a.download = fileName;
       a.click();
       URL.revokeObjectURL(url);
+      setMsg(`Exported ${results.length} examination result(s) to ${fileName}.`);
+    } catch {
+      setErr('Network error while exporting CSV results.');
+    } finally {
+      setExportingFormat(null);
+    }
+  };
+
+  const handleExportResultsPdf = () => {
+    setErr('');
+    setMsg('');
+    if (results.length === 0) {
+      setErr('No examination results match the current filters to export.');
+      return;
+    }
+
+    setExportingFormat('pdf');
+    try {
+      const schoolName = resSchoolId
+        ? schools.find((s) => String(s.id) === resSchoolId)?.name
+        : undefined;
+      const subjectName = resSubjectId
+        ? subjects.find((s) => String(s.id) === resSubjectId)?.name
+        : undefined;
+      const examTitle = resExamId
+        ? exams.find((ex) => String(ex.id) === resExamId)?.title
+        : undefined;
+
+      const fileName = exportResultsToPdf(results, {
+        schoolName,
+        classLevel: resClass || undefined,
+        arm: resArm || undefined,
+        subjectName,
+        examTitle,
+      });
+      setMsg(`Exported ${results.length} examination result(s) to ${fileName}.`);
+    } catch {
+      setErr('Unable to generate PDF results report.');
+    } finally {
+      setExportingFormat(null);
     }
   };
 
@@ -1414,28 +1472,50 @@ export function AdminCbtManagementSection({
           </h2>
           <p className="text-sm text-slate-600">
             Filter automatically marked CBT results, control result
-            publication, export CSV sheets, and print reports.
+            publication, and export reports as PDF or CSV.
           </p>
         </div>
         <div className="flex flex-wrap gap-2.5">
           <button
             type="button"
+            disabled={exportingFormat !== null}
             onClick={handleExportResultsCsv}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#123B72] text-[#123B72] text-sm font-semibold hover:bg-[#123B72] hover:text-white"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#123B72] text-[#123B72] text-sm font-semibold hover:bg-[#123B72] hover:text-white disabled:opacity-50 transition-colors"
           >
-            <Download className="w-4 h-4" />
-            Download CSV
+            <FileSpreadsheet className="w-4 h-4" />
+            {exportingFormat === 'csv' ? 'Exporting CSV...' : 'Export CSV'}
+          </button>
+          <button
+            type="button"
+            disabled={exportingFormat !== null}
+            onClick={handleExportResultsPdf}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#123B72] text-white text-sm font-semibold hover:bg-[#1769AA] disabled:opacity-50 transition-colors"
+          >
+            <FileText className="w-4 h-4" />
+            {exportingFormat === 'pdf' ? 'Generating PDF...' : 'Export PDF'}
           </button>
           <button
             type="button"
             onClick={() => window.print()}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold hover:bg-[#d1327c]"
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold hover:bg-[#d1327c] transition-colors"
           >
             <Printer className="w-4 h-4" />
-            Print Result Report
+            Print
           </button>
         </div>
       </div>
+
+      {msg && (
+        <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm flex items-center gap-2 no-print">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{msg}</span>
+        </div>
+      )}
+      {err && (
+        <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm no-print">
+          {err}
+        </div>
+      )}
 
       {/* Publication Controls per Exam */}
       {exams.length > 0 && (

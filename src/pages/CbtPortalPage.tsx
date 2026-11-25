@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Clock,
   FileCheck2,
   LayoutGrid,
   Lock,
@@ -22,6 +21,10 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { BrandLogo } from '../components/BrandLogo.tsx';
+import {
+  ExamCountdownTimer,
+  formatCountdownTime,
+} from '../components/cbt/ExamCountdownTimer.tsx';
 
 interface ExamSummary {
   id: number;
@@ -79,17 +82,6 @@ interface SubmissionResult {
   } | null;
 }
 
-function formatSeconds(totalSeconds: number): string {
-  const safe = Math.max(0, Math.floor(totalSeconds));
-  const hrs = Math.floor(safe / 3600);
-  const mins = Math.floor((safe % 3600) / 60);
-  const secs = safe % 60;
-  if (hrs > 0) {
-    return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  }
-  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-}
-
 export function CbtPortalPage() {
   const { studentToken, student, setStudentSession, clearStudentSession } =
     useAuth();
@@ -132,6 +124,7 @@ export function CbtPortalPage() {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const autoSubmittedRef = useRef(false);
+  const deadlineMsRef = useRef<number | null>(null);
   const enteredFullscreenRef = useRef(false);
   const lastViolationAtRef = useRef(0);
   const securityNoticeTimerRef = useRef<number | null>(null);
@@ -269,22 +262,35 @@ export function CbtPortalPage() {
     ]
   );
 
-  // Live countdown timer
+  // Drift-free live countdown timer anchored to server remainingSeconds
   useEffect(() => {
     if (!activeAttemptId || submissionOutcome) return;
 
-    const timer = window.setInterval(() => {
-      setRemainingSeconds((prev) => {
-        if (prev <= 1) {
-          window.clearInterval(timer);
-          handleSubmitExam(true, 'time_expired');
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    const syncCountdown = () => {
+      const deadlineMs = deadlineMsRef.current;
+      if (deadlineMs === null) return false;
+      const nextSeconds = Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
+      setRemainingSeconds(nextSeconds);
+      if (nextSeconds <= 0) {
+        handleSubmitExam(true, 'time_expired');
+        return true;
+      }
+      return false;
+    };
 
-    return () => window.clearInterval(timer);
+    if (syncCountdown()) return;
+
+    const timer = window.setInterval(() => {
+      if (syncCountdown()) {
+        window.clearInterval(timer);
+      }
+    }, 250);
+
+    document.addEventListener('visibilitychange', syncCountdown);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', syncCountdown);
+    };
   }, [activeAttemptId, submissionOutcome, handleSubmitExam]);
 
   // Active Exam Security Lockdown (prevents minimizing, switching tabs, opening new tabs, or leaving fullscreen)
@@ -490,6 +496,8 @@ export function CbtPortalPage() {
     setActiveExam(null);
     setQuestions([]);
     setAnswers({});
+    deadlineMsRef.current = null;
+    setRemainingSeconds(0);
     setSecurityViolations(0);
     setSecurityLockMessage(null);
     setSubmissionOutcome(null);
@@ -519,11 +527,16 @@ export function CbtPortalPage() {
         return;
       }
 
+      const initialRemaining = Math.max(
+        0,
+        Number(data.attempt.remainingSeconds ?? 0)
+      );
+      deadlineMsRef.current = Date.now() + initialRemaining * 1000;
       setActiveAttemptId(data.attempt.id);
       setActiveExam(selectedExamForInstructions);
       setQuestions(data.questions || []);
       setAnswers(data.savedAnswers || {});
-      setRemainingSeconds(data.attempt.remainingSeconds ?? 0);
+      setRemainingSeconds(initialRemaining);
       setSecurityViolations(data.attempt.securityViolations ?? 0);
       setCurrentIndex(0);
       setSelectedExamForInstructions(null);
@@ -787,7 +800,6 @@ export function CbtPortalPage() {
       questions.length > 0
         ? Math.round((answeredCount / questions.length) * 100)
         : 0;
-    const isLowTime = remainingSeconds <= 300;
 
     return (
       <div className="min-h-screen bg-[#F5F8FC] flex flex-col select-none">
@@ -837,16 +849,11 @@ export function CbtPortalPage() {
                 )}
               </div>
 
-              <div
-                className={`px-3.5 py-2 rounded-lg font-mono-tabular text-sm sm:text-base font-bold flex items-center gap-2 ${
-                  isLowTime
-                    ? 'bg-red-600 text-white'
-                    : 'bg-white/10 text-[#D4AF37]'
-                }`}
-              >
-                <Clock className="w-4 h-4 shrink-0" />
-                <span>{formatSeconds(remainingSeconds)}</span>
-              </div>
+              <ExamCountdownTimer
+                variant="header"
+                remainingSeconds={remainingSeconds}
+                totalDurationMinutes={activeExam.durationMinutes}
+              />
 
               <button
                 type="button"
@@ -1033,20 +1040,27 @@ export function CbtPortalPage() {
               </div>
             </div>
 
-            {/* Question Navigation Panel (Desktop + Mobile Drawer) */}
+            {/* Question Navigation & Live Countdown Panel */}
             <aside
-              className={`lg:col-span-4 bg-white border border-slate-200 rounded-xl p-5 space-y-5 ${
+              className={`lg:col-span-4 space-y-4 ${
                 showMobilePalette ? 'block' : 'hidden lg:block'
               }`}
             >
-              <div className="flex items-center justify-between">
-                <h2 className="font-display text-sm font-bold text-[#123B72]">
-                  Question Navigation
-                </h2>
-                <span className="font-mono-tabular text-xs font-semibold text-[#1769AA]">
-                  {answeredCount}/{questions.length} ({completionPercentage}%)
-                </span>
-              </div>
+              <ExamCountdownTimer
+                variant="card"
+                remainingSeconds={remainingSeconds}
+                totalDurationMinutes={activeExam.durationMinutes}
+              />
+
+              <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-5">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-display text-sm font-bold text-[#123B72]">
+                    Question Navigation
+                  </h2>
+                  <span className="font-mono-tabular text-xs font-semibold text-[#1769AA]">
+                    {answeredCount}/{questions.length} ({completionPercentage}%)
+                  </span>
+                </div>
 
               <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-5 gap-2">
                 {questions.map((q, idx) => {
@@ -1100,13 +1114,14 @@ export function CbtPortalPage() {
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setShowConfirmModal(true)}
-                className="w-full py-3 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold hover:bg-[#d1327c] transition-colors"
-              >
-                Submit Examination
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmModal(true)}
+                  className="w-full py-3 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold hover:bg-[#d1327c] transition-colors"
+                >
+                  Submit Examination
+                </button>
+              </div>
             </aside>
           </div>
         </main>
@@ -1190,6 +1205,12 @@ export function CbtPortalPage() {
                     <span>Unanswered Questions:</span>
                     <strong className="text-[#E83E8C]">
                       {questions.length - answeredCount}
+                    </strong>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Time Remaining:</span>
+                    <strong className="text-[#1769AA]">
+                      {formatCountdownTime(remainingSeconds)}
                     </strong>
                   </div>
                 </div>

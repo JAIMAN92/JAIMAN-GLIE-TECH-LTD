@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/index.ts';
 import {
   adminActivityLogs,
@@ -11,6 +11,32 @@ import {
   students,
 } from '../db/schema.ts';
 import { hashSessionToken } from './crypto.ts';
+import type { AdminRole } from '../shared/types.ts';
+
+let adminColumnsReadyPromise: Promise<void> | null = null;
+
+export async function ensureAdminRoleColumns(): Promise<void> {
+  if (!adminColumnsReadyPromise) {
+    adminColumnsReadyPromise = (async () => {
+      try {
+        await db.execute(
+          sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'super_admin'`
+        );
+        await db.execute(
+          sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+        );
+      } catch (err) {
+        adminColumnsReadyPromise = null;
+        console.warn('Admin column migration check:', err);
+      }
+    })();
+  }
+  return adminColumnsReadyPromise;
+}
+
+export function normalizeAdminRole(raw?: string | null): AdminRole {
+  return raw === 'data_entry' ? 'data_entry' : 'super_admin';
+}
 
 export interface AdminRequest extends Request {
   admin?: {
@@ -18,6 +44,8 @@ export interface AdminRequest extends Request {
     username: string;
     email: string;
     fullName: string;
+    role: AdminRole;
+    isActive: boolean;
     mustChangePassword: boolean;
     sessionId: number;
   };
@@ -152,6 +180,7 @@ export const requireAdmin = async (
   }
 
   try {
+    await ensureAdminRoleColumns();
     const tokenHash = hashSessionToken(rawToken);
     const now = new Date();
 
@@ -162,6 +191,8 @@ export const requireAdmin = async (
         username: admins.username,
         email: admins.email,
         fullName: admins.fullName,
+        role: admins.role,
+        isActive: admins.isActive,
         mustChangePassword: admins.mustChangePassword,
       })
       .from(adminSessions)
@@ -182,6 +213,13 @@ export const requireAdmin = async (
     }
 
     const sessionUser = rows[0];
+
+    if (!sessionUser.isActive) {
+      return res.status(403).json({
+        error:
+          'This administrator account has been deactivated. Contact a primary administrator.',
+      });
+    }
 
     // Allow password change, profile/me, and logout even when mustChangePassword is true
     const allowedWhenForced = [
@@ -204,6 +242,8 @@ export const requireAdmin = async (
       username: sessionUser.username,
       email: sessionUser.email,
       fullName: sessionUser.fullName,
+      role: normalizeAdminRole(sessionUser.role),
+      isActive: sessionUser.isActive,
       mustChangePassword: sessionUser.mustChangePassword,
       sessionId: sessionUser.sessionId,
     };
@@ -215,6 +255,20 @@ export const requireAdmin = async (
       .status(500)
       .json({ error: 'Authentication verification failed.' });
   }
+};
+
+export const requireSuperAdmin = (
+  req: AdminRequest,
+  res: Response,
+  next: NextFunction
+) => {
+  if (!req.admin || req.admin.role !== 'super_admin') {
+    return res.status(403).json({
+      error:
+        'Access denied: Your account is restricted to Student Registration and Questions & Answers management only.',
+    });
+  }
+  return next();
 };
 
 export const requireStudent = async (

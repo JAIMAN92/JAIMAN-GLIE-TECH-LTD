@@ -16,6 +16,8 @@ export const admins = pgTable('admins', {
   username: text('username').notNull().unique(),
   email: text('email').notNull(),
   fullName: text('full_name').notNull(),
+  role: text('role').notNull().default('super_admin'), // 'super_admin' | 'data_entry'
+  isActive: boolean('is_active').notNull().default(true),
   passwordHash: text('password_hash').notNull(),
   mustChangePassword: boolean('must_change_password').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),

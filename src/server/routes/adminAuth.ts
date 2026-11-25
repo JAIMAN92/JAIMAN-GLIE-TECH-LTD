@@ -7,7 +7,9 @@ import {
   type AdminRequest,
   checkLoginLockout,
   clearLoginFailures,
+  ensureAdminRoleColumns,
   logAdminActivity,
+  normalizeAdminRole,
   recordFailedLogin,
   requireAdmin,
 } from '../authMiddleware.ts';
@@ -57,6 +59,7 @@ async function createAdminSession(
 
 router.get('/auth-status', async (_req, res) => {
   try {
+    await ensureAdminRoleColumns();
     const [{ value: adminCount }] = await db
       .select({ value: count() })
       .from(admins);
@@ -76,6 +79,7 @@ router.get('/auth-status', async (_req, res) => {
 
 router.post('/bootstrap', async (req, res) => {
   try {
+    await ensureAdminRoleColumns();
     const [{ value: adminCount }] = await db
       .select({ value: count() })
       .from(admins);
@@ -113,6 +117,8 @@ router.post('/bootstrap', async (req, res) => {
         username: username.trim().toLowerCase(),
         email: email.trim().toLowerCase(),
         fullName: fullName.trim(),
+        role: 'super_admin',
+        isActive: true,
         passwordHash: hashPassword(password),
         mustChangePassword: false,
       })
@@ -134,6 +140,7 @@ router.post('/bootstrap', async (req, res) => {
         username: created.username,
         email: created.email,
         fullName: created.fullName,
+        role: normalizeAdminRole(created.role),
         mustChangePassword: created.mustChangePassword,
       },
     });
@@ -145,6 +152,7 @@ router.post('/bootstrap', async (req, res) => {
 
 router.post('/login', async (req, res) => {
   try {
+    await ensureAdminRoleColumns();
     const { identifier, password } = req.body ?? {};
     if (
       typeof identifier !== 'string' ||
@@ -199,6 +207,8 @@ router.post('/login', async (req, res) => {
             ? cleanId
             : 'admin@jaimangoldenlite.local',
           fullName: 'System Administrator',
+          role: 'super_admin',
+          isActive: true,
           passwordHash: hashPassword(password),
           mustChangePassword: true,
         })
@@ -221,6 +231,7 @@ router.post('/login', async (req, res) => {
           username: seededAdmin.username,
           email: seededAdmin.email,
           fullName: seededAdmin.fullName,
+          role: normalizeAdminRole(seededAdmin.role),
           mustChangePassword: seededAdmin.mustChangePassword,
         },
       });
@@ -233,7 +244,12 @@ router.post('/login', async (req, res) => {
       .limit(1);
 
     let envMatches = false;
-    if (envInitial && matched && matched.username === 'admin') {
+    if (
+      envInitial &&
+      matched &&
+      matched.username === 'admin' &&
+      normalizeAdminRole(matched.role) === 'super_admin'
+    ) {
       const providedDigest = crypto
         .createHash('sha256')
         .update(password)
@@ -248,6 +264,13 @@ router.post('/login', async (req, res) => {
     if (!matched || (!verifyPassword(password, matched.passwordHash) && !envMatches)) {
       await recordFailedLogin(rateKey);
       return res.status(401).json({ error: 'Invalid username or password.' });
+    }
+
+    if (!matched.isActive) {
+      return res.status(403).json({
+        error:
+          'This administrator account has been deactivated. Contact a primary administrator.',
+      });
     }
 
     await clearLoginFailures(rateKey);
@@ -267,6 +290,7 @@ router.post('/login', async (req, res) => {
         username: matched.username,
         email: matched.email,
         fullName: matched.fullName,
+        role: normalizeAdminRole(matched.role),
         mustChangePassword: matched.mustChangePassword,
       },
     });
@@ -349,6 +373,7 @@ router.post('/change-password', requireAdmin, async (req: AdminRequest, res) => 
         username: updated.username,
         email: updated.email,
         fullName: updated.fullName,
+        role: normalizeAdminRole(updated.role),
         mustChangePassword: updated.mustChangePassword,
       },
     });
