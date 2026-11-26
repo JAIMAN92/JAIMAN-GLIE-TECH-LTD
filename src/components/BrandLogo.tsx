@@ -13,8 +13,13 @@ export function BrandLogo({ compact = false, lightText = false }: BrandLogoProps
     const raw = (branding.logoImageUrl || '').trim();
     if (!raw) return '';
     if (
-      /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(raw)
+      /^data:image\/(png|jpeg|jpg|webp|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$/i.test(
+        raw
+      )
     ) {
+      return raw;
+    }
+    if (raw.startsWith('/') && !raw.startsWith('//')) {
       return raw;
     }
     try {
