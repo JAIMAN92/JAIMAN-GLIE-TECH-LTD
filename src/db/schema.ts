@@ -149,6 +149,7 @@ export const questions = pgTable('questions', {
     .notNull(),
   topic: text('topic').notNull().default('General'),
   questionText: text('question_text').notNull(),
+  imageUrl: text('image_url').notNull().default(''),
   optionA: text('option_a').notNull(),
   optionB: text('option_b').notNull(),
   optionC: text('option_c').notNull(),

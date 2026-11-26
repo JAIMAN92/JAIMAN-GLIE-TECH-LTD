@@ -8,16 +8,20 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Cloud,
   FileCheck2,
   LayoutGrid,
   Lock,
   LogOut,
   Maximize2,
   Printer,
+  RefreshCw,
   Send,
   ShieldAlert,
   ShieldCheck,
+  WifiOff,
   X,
+  ZoomIn,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { BrandLogo } from '../components/BrandLogo.tsx';
@@ -25,6 +29,13 @@ import {
   ExamCountdownTimer,
   formatCountdownTime,
 } from '../components/cbt/ExamCountdownTimer.tsx';
+import { ExamProgressBar } from '../components/cbt/ExamProgressBar.tsx';
+import { MathText } from '../components/MathText.tsx';
+import {
+  clearExamDraft,
+  loadExamDraft,
+  saveExamDraft,
+} from '../lib/cbtAutosave.ts';
 
 interface ExamSummary {
   id: number;
@@ -61,6 +72,7 @@ interface ExamQuestionItem {
   id: number;
   topic: string;
   questionText: string;
+  imageUrl?: string;
   optionA: string;
   optionB: string;
   optionC: string;
@@ -107,9 +119,17 @@ export function CbtPortalPage() {
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [currentIndex, setCurrentIndex] = useState(0);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveStatus, setSaveStatus] = useState<
+    'idle' | 'saving' | 'saved' | 'offline_cached' | 'error'
+  >('idle');
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const [draftRecoveryNotice, setDraftRecoveryNotice] = useState<string | null>(
+    null
+  );
   const [showMobilePalette, setShowMobilePalette] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [zoomedDiagramUrl, setZoomedDiagramUrl] = useState<string | null>(null);
   const [submittingExam, setSubmittingExam] = useState(false);
   const [submissionOutcome, setSubmissionOutcome] =
     useState<SubmissionResult | null>(null);
@@ -128,6 +148,10 @@ export function CbtPortalPage() {
   const enteredFullscreenRef = useRef(false);
   const lastViolationAtRef = useRef(0);
   const securityNoticeTimerRef = useRef<number | null>(null);
+  const answersRef = useRef<Record<number, string>>({});
+  const currentIndexRef = useRef(0);
+  const dirtyQuestionIdsRef = useRef<Set<number>>(new Set());
+  const syncInFlightRef = useRef(false);
 
   const exitExamFullscreen = useCallback(() => {
     try {
@@ -206,6 +230,168 @@ export function CbtPortalPage() {
     }
   }, [studentToken, fetchAssignedExams]);
 
+  const persistLocalDraft = useCallback(
+    (
+      nextAnswers: Record<number, string>,
+      nextIndex: number,
+      targetAttemptId = activeAttemptId
+    ) => {
+      if (!student || !targetAttemptId) return;
+      saveExamDraft(student.id, targetAttemptId, {
+        answers: nextAnswers,
+        currentIndex: nextIndex,
+        dirtyQuestionIds: Array.from(dirtyQuestionIdsRef.current),
+        updatedAt: Date.now(),
+      });
+    },
+    [student, activeAttemptId]
+  );
+
+  const syncPendingAnswers = useCallback(
+    async (
+      targetAttemptId = activeAttemptId,
+      forceFullSnapshot = false
+    ): Promise<boolean> => {
+      if (!studentToken || !student || !targetAttemptId) return false;
+      if (syncInFlightRef.current) return false;
+
+      const currentAnswers = answersRef.current;
+      const keysToSync = forceFullSnapshot
+        ? Object.keys(currentAnswers).map((k) => Number(k))
+        : Array.from(dirtyQuestionIdsRef.current);
+
+      persistLocalDraft(currentAnswers, currentIndexRef.current, targetAttemptId);
+
+      if (keysToSync.length === 0) {
+        return true;
+      }
+
+      const batchPayload: Record<string, string> = {};
+      for (const qId of keysToSync) {
+        const val = currentAnswers[qId];
+        if (val) {
+          batchPayload[String(qId)] = val;
+        }
+      }
+
+      if (Object.keys(batchPayload).length === 0) {
+        return true;
+      }
+
+      syncInFlightRef.current = true;
+      setSaveStatus('saving');
+      try {
+        const res = await fetch(
+          `/api/cbt/attempts/${targetAttemptId}/answers/batch`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${studentToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ answers: batchPayload }),
+          }
+        );
+
+        if (!res.ok) {
+          setSaveStatus('offline_cached');
+          return false;
+        }
+
+        const data = await res.json();
+        for (const [qIdStr, sentOption] of Object.entries(batchPayload)) {
+          const qId = Number(qIdStr);
+          if (answersRef.current[qId] === sentOption) {
+            dirtyQuestionIdsRef.current.delete(qId);
+          }
+        }
+
+        const remainingDirty = dirtyQuestionIdsRef.current.size;
+        setPendingSyncCount(remainingDirty);
+        persistLocalDraft(
+          answersRef.current,
+          currentIndexRef.current,
+          targetAttemptId
+        );
+        setLastSavedAt(
+          data.savedAt
+            ? new Date(data.savedAt).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+              })
+            : new Date().toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+              })
+        );
+        setSaveStatus(remainingDirty === 0 ? 'saved' : 'offline_cached');
+        return remainingDirty === 0;
+      } catch {
+        setSaveStatus('offline_cached');
+        return false;
+      } finally {
+        syncInFlightRef.current = false;
+      }
+    },
+    [studentToken, student, activeAttemptId, persistLocalDraft]
+  );
+
+  // Sync currentIndexRef & persist localStorage position when navigating questions
+  useEffect(() => {
+    currentIndexRef.current = currentIndex;
+    if (activeAttemptId && student && !submissionOutcome) {
+      persistLocalDraft(answersRef.current, currentIndex, activeAttemptId);
+    }
+  }, [currentIndex, activeAttemptId, student, submissionOutcome, persistLocalDraft]);
+
+  // Periodic background auto-save (every 15 seconds) + online reconnect recovery
+  useEffect(() => {
+    if (!activeAttemptId || !student || submissionOutcome) return;
+
+    const runPeriodicAutosave = () => {
+      persistLocalDraft(
+        answersRef.current,
+        currentIndexRef.current,
+        activeAttemptId
+      );
+      if (dirtyQuestionIdsRef.current.size > 0) {
+        syncPendingAnswers(activeAttemptId, false);
+      }
+    };
+
+    const handleOnline = () => {
+      if (dirtyQuestionIdsRef.current.size > 0) {
+        syncPendingAnswers(activeAttemptId, false);
+      }
+    };
+
+    const handlePageHide = () => {
+      persistLocalDraft(
+        answersRef.current,
+        currentIndexRef.current,
+        activeAttemptId
+      );
+    };
+
+    const intervalId = window.setInterval(runPeriodicAutosave, 15000);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('pagehide', handlePageHide);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [
+    activeAttemptId,
+    student,
+    submissionOutcome,
+    persistLocalDraft,
+    syncPendingAnswers,
+  ]);
+
   const handleSubmitExam = useCallback(
     async (
       isAuto = false,
@@ -222,6 +408,10 @@ export function CbtPortalPage() {
       setShowConfirmModal(false);
       setSecurityLockMessage(null);
       try {
+        if (dirtyQuestionIdsRef.current.size > 0) {
+          await syncPendingAnswers(activeAttemptId, true);
+        }
+
         const res = await fetch(
           `/api/cbt/attempts/${activeAttemptId}/submit`,
           {
@@ -235,6 +425,11 @@ export function CbtPortalPage() {
         );
         const data = await res.json();
         if (res.ok) {
+          if (student) {
+            clearExamDraft(student.id, activeAttemptId);
+          }
+          dirtyQuestionIdsRef.current.clear();
+          setPendingSyncCount(0);
           exitExamFullscreen();
           setSubmissionOutcome({
             resultsPublished: Boolean(data.resultsPublished),
@@ -255,10 +450,12 @@ export function CbtPortalPage() {
     },
     [
       studentToken,
+      student,
       activeAttemptId,
       submittingExam,
       fetchAssignedExams,
       exitExamFullscreen,
+      syncPendingAnswers,
     ]
   );
 
@@ -324,6 +521,11 @@ export function CbtPortalPage() {
             setSecurityViolations(data.securityViolations);
           }
           if (data.autoSubmitted) {
+            if (student && activeAttemptId) {
+              clearExamDraft(student.id, activeAttemptId);
+            }
+            dirtyQuestionIdsRef.current.clear();
+            setPendingSyncCount(0);
             autoSubmittedRef.current = true;
             setSecurityLockMessage(null);
             exitExamFullscreen();
@@ -341,7 +543,7 @@ export function CbtPortalPage() {
         setSecurityViolations((v) => v + 1);
       }
     },
-    [studentToken, activeAttemptId, exitExamFullscreen, fetchAssignedExams]
+    [studentToken, student, activeAttemptId, exitExamFullscreen, fetchAssignedExams]
   );
 
   useEffect(() => {
@@ -496,6 +698,12 @@ export function CbtPortalPage() {
     setActiveExam(null);
     setQuestions([]);
     setAnswers({});
+    answersRef.current = {};
+    dirtyQuestionIdsRef.current.clear();
+    setPendingSyncCount(0);
+    setLastSavedAt(null);
+    setSaveStatus('idle');
+    setDraftRecoveryNotice(null);
     deadlineMsRef.current = null;
     setRemainingSeconds(0);
     setSecurityViolations(0);
@@ -504,8 +712,9 @@ export function CbtPortalPage() {
   };
 
   const handleStartExam = async () => {
-    if (!studentToken || !selectedExamForInstructions) return;
+    if (!studentToken || !student || !selectedExamForInstructions) return;
     setExamsError('');
+    setDraftRecoveryNotice(null);
     autoSubmittedRef.current = false;
     setSecurityLockMessage(null);
     setSecurityNotice(null);
@@ -527,20 +736,91 @@ export function CbtPortalPage() {
         return;
       }
 
+      const loadedQuestions: ExamQuestionItem[] = data.questions || [];
+      const serverAnswers: Record<number, string> = data.savedAnswers || {};
+      const attemptId: number = data.attempt.id;
+
+      // Merge any unsaved localStorage backup answers from this device
+      const localDraft = loadExamDraft(student.id, attemptId);
+      const mergedAnswers: Record<number, string> = { ...serverAnswers };
+      const recoveredDirtyIds = new Set<number>();
+      let restoredQuestionCount = 0;
+
+      if (localDraft) {
+        for (const qId of localDraft.dirtyQuestionIds) {
+          const localVal = localDraft.answers[qId];
+          if (localVal && serverAnswers[qId] !== localVal) {
+            mergedAnswers[qId] = localVal;
+            recoveredDirtyIds.add(qId);
+            restoredQuestionCount += 1;
+          }
+        }
+        // Also recover any locally stored answer absent on server
+        for (const [qIdStr, localVal] of Object.entries(localDraft.answers)) {
+          const qId = Number(qIdStr);
+          if (localVal && !serverAnswers[qId]) {
+            mergedAnswers[qId] = localVal;
+            recoveredDirtyIds.add(qId);
+            restoredQuestionCount += 1;
+          }
+        }
+      }
+
+      const resumedIndex =
+        localDraft && loadedQuestions.length > 0
+          ? Math.min(
+              loadedQuestions.length - 1,
+              Math.max(0, localDraft.currentIndex)
+            )
+          : 0;
+
       const initialRemaining = Math.max(
         0,
         Number(data.attempt.remainingSeconds ?? 0)
       );
       deadlineMsRef.current = Date.now() + initialRemaining * 1000;
-      setActiveAttemptId(data.attempt.id);
+      answersRef.current = mergedAnswers;
+      currentIndexRef.current = resumedIndex;
+      dirtyQuestionIdsRef.current = recoveredDirtyIds;
+
+      setActiveAttemptId(attemptId);
       setActiveExam(selectedExamForInstructions);
-      setQuestions(data.questions || []);
-      setAnswers(data.savedAnswers || {});
+      setQuestions(loadedQuestions);
+      setAnswers(mergedAnswers);
+      setPendingSyncCount(recoveredDirtyIds.size);
       setRemainingSeconds(initialRemaining);
       setSecurityViolations(data.attempt.securityViolations ?? 0);
-      setCurrentIndex(0);
+      setCurrentIndex(resumedIndex);
       setSelectedExamForInstructions(null);
       setSubmissionOutcome(null);
+
+      saveExamDraft(student.id, attemptId, {
+        answers: mergedAnswers,
+        currentIndex: resumedIndex,
+        dirtyQuestionIds: Array.from(recoveredDirtyIds),
+        updatedAt: Date.now(),
+      });
+
+      if (recoveredDirtyIds.size > 0) {
+        setDraftRecoveryNotice(
+          `Restored ${restoredQuestionCount} unsaved answer${
+            restoredQuestionCount === 1 ? '' : 's'
+          } from this device and syncing with the server...`
+        );
+        syncPendingAnswers(attemptId, false);
+      } else if (Object.keys(mergedAnswers).length > 0) {
+        setSaveStatus('saved');
+        setLastSavedAt(
+          new Date().toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          })
+        );
+      } else {
+        setSaveStatus('idle');
+        setLastSavedAt(null);
+      }
     } catch {
       exitExamFullscreen();
       setExamsError('Network error starting examination.');
@@ -548,8 +828,22 @@ export function CbtPortalPage() {
   };
 
   const handleSelectOption = async (questionId: number, option: string) => {
-    if (!studentToken || !activeAttemptId) return;
-    setAnswers((prev) => ({ ...prev, [questionId]: option }));
+    if (!studentToken || !student || !activeAttemptId) return;
+
+    const nextAnswers = { ...answersRef.current, [questionId]: option };
+    answersRef.current = nextAnswers;
+    dirtyQuestionIdsRef.current.add(questionId);
+    setAnswers(nextAnswers);
+    setPendingSyncCount(dirtyQuestionIdsRef.current.size);
+
+    // Immediately cache progress in localStorage to prevent data loss
+    saveExamDraft(student.id, activeAttemptId, {
+      answers: nextAnswers,
+      currentIndex: currentIndexRef.current,
+      dirtyQuestionIds: Array.from(dirtyQuestionIdsRef.current),
+      updatedAt: Date.now(),
+    });
+
     setSaveStatus('saving');
 
     try {
@@ -562,12 +856,37 @@ export function CbtPortalPage() {
         body: JSON.stringify({ questionId, selectedOption: option }),
       });
       if (res.ok) {
-        setSaveStatus('saved');
+        const data = await res.json();
+        if (answersRef.current[questionId] === option) {
+          dirtyQuestionIdsRef.current.delete(questionId);
+        }
+        const remainingDirty = dirtyQuestionIdsRef.current.size;
+        setPendingSyncCount(remainingDirty);
+        saveExamDraft(student.id, activeAttemptId, {
+          answers: answersRef.current,
+          currentIndex: currentIndexRef.current,
+          dirtyQuestionIds: Array.from(dirtyQuestionIdsRef.current),
+          updatedAt: Date.now(),
+        });
+        setLastSavedAt(
+          data.savedAt
+            ? new Date(data.savedAt).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+              })
+            : new Date().toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+              })
+        );
+        setSaveStatus(remainingDirty === 0 ? 'saved' : 'offline_cached');
       } else {
-        setSaveStatus('error');
+        setSaveStatus('offline_cached');
       }
     } catch {
-      setSaveStatus('error');
+      setSaveStatus('offline_cached');
     }
   };
 
@@ -837,15 +1156,24 @@ export function CbtPortalPage() {
                 )}
               </div>
 
-              <div className="text-xs hidden sm:block">
+              <div className="text-xs hidden sm:flex items-center gap-1.5">
                 {saveStatus === 'saving' && (
-                  <span className="text-[#D4AF37]">Saving answer...</span>
+                  <span className="inline-flex items-center gap-1.5 text-[#D4AF37]">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Syncing progress...
+                  </span>
                 )}
                 {saveStatus === 'saved' && (
-                  <span className="text-emerald-300">Answers auto-saved</span>
+                  <span className="inline-flex items-center gap-1.5 text-emerald-300 font-mono-tabular">
+                    <Cloud className="w-3.5 h-3.5" />
+                    Auto-saved{lastSavedAt ? ` · ${lastSavedAt}` : ''}
+                  </span>
                 )}
-                {saveStatus === 'error' && (
-                  <span className="text-red-300">Save retry needed</span>
+                {(saveStatus === 'offline_cached' || saveStatus === 'error') && (
+                  <span className="inline-flex items-center gap-1.5 text-amber-300">
+                    <WifiOff className="w-3.5 h-3.5" />
+                    Saved locally ({pendingSyncCount || 1} pending sync)
+                  </span>
                 )}
               </div>
 
@@ -871,6 +1199,26 @@ export function CbtPortalPage() {
 
         {/* Main Exam Grid */}
         <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-5">
+          {draftRecoveryNotice && (
+            <div
+              role="status"
+              className="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl px-4 py-3 text-xs sm:text-sm flex items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0" />
+                <span className="font-medium">{draftRecoveryNotice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDraftRecoveryNotice(null)}
+                className="text-emerald-700 hover:text-emerald-950 shrink-0"
+                aria-label="Dismiss recovery notice"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {securityNotice && (
             <div
               role="status"
@@ -891,52 +1239,13 @@ export function CbtPortalPage() {
             </div>
           )}
 
-          {/* Visual Completion Progress Bar */}
-          <section
-            aria-label="Examination completion progress"
-            className="bg-white border border-slate-200 rounded-xl p-4 sm:px-6 space-y-2.5"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm">
-                <span className="font-display font-bold text-[#123B72]">
-                  Examination Progress
-                </span>
-                <span aria-hidden="true" className="text-slate-300">
-                  ·
-                </span>
-                <span className="font-mono-tabular text-slate-600">
-                  {answeredCount} of {questions.length} questions completed
-                </span>
-              </div>
-              <span
-                className={`font-mono-tabular text-sm sm:text-base font-bold ${
-                  completionPercentage === 100
-                    ? 'text-emerald-700'
-                    : 'text-[#1769AA]'
-                }`}
-              >
-                {completionPercentage}%
-              </span>
-            </div>
-
-            <div
-              role="progressbar"
-              aria-valuenow={completionPercentage}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-label="Percentage of questions completed"
-              className="h-3 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200/80"
-            >
-              <div
-                className={`h-full rounded-full transition-all duration-300 ${
-                  completionPercentage === 100
-                    ? 'bg-emerald-600'
-                    : 'bg-[#1769AA]'
-                }`}
-                style={{ width: `${completionPercentage}%` }}
-              />
-            </div>
-          </section>
+          <ExamProgressBar
+            variant="full"
+            questions={questions}
+            answers={answers}
+            currentIndex={currentIndex}
+            onJumpToQuestion={(idx) => setCurrentIndex(idx)}
+          />
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             {/* Question Display */}
@@ -957,9 +1266,39 @@ export function CbtPortalPage() {
                 </span>
               </div>
 
-              <div className="text-base sm:text-lg font-medium text-[#1E293B] leading-relaxed">
-                {currentQuestion.questionText}
+              <div className="text-base sm:text-lg font-medium text-[#1E293B] leading-relaxed whitespace-pre-line">
+                <MathText text={currentQuestion.questionText} />
               </div>
+
+              {currentQuestion.imageUrl && (
+                <div className="rounded-xl border border-slate-200 bg-[#F5F8FC] p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[#123B72]">
+                      Question Diagram / Figure
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setZoomedDiagramUrl(currentQuestion.imageUrl || null)
+                      }
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-[#1769AA] hover:underline"
+                    >
+                      <ZoomIn className="w-3.5 h-3.5" />
+                      Enlarge Diagram
+                    </button>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-lg p-3 flex justify-center">
+                    <img
+                      src={currentQuestion.imageUrl}
+                      alt={`Diagram for Question ${currentIndex + 1}`}
+                      onClick={() =>
+                        setZoomedDiagramUrl(currentQuestion.imageUrl || null)
+                      }
+                      className="max-h-72 w-auto object-contain rounded cursor-zoom-in"
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* 4 Answer Options */}
               <div className="space-y-3">
@@ -995,7 +1334,7 @@ export function CbtPortalPage() {
                         {opt.key}
                       </span>
                       <span className="text-sm sm:text-base pt-0.5 leading-relaxed">
-                        {opt.text}
+                        <MathText text={opt.text} />
                       </span>
                     </button>
                   );
@@ -1103,6 +1442,31 @@ export function CbtPortalPage() {
                 </div>
               </div>
 
+              <div className="pt-3 border-t border-slate-200 text-xs text-slate-600 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-semibold text-[#123B72] flex items-center gap-1.5">
+                    <Cloud className="w-3.5 h-3.5 text-[#1769AA]" />
+                    Auto-Save Protection
+                  </p>
+                  {pendingSyncCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => syncPendingAnswers(activeAttemptId, false)}
+                      className="text-[11px] font-semibold text-[#1769AA] hover:underline"
+                    >
+                      Sync Now
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  {saveStatus === 'offline_cached' || saveStatus === 'error'
+                    ? `${pendingSyncCount || 1} answer(s) safely stored on this device and will sync automatically every 15s or when reconnected.`
+                    : lastSavedAt
+                      ? `Device backup & server sync active · Last synced ${lastSavedAt}`
+                      : 'Answers save immediately to this device and sync to the server every 15 seconds.'}
+                </p>
+              </div>
+
               <div className="pt-3 border-t border-slate-200 text-xs text-slate-600 space-y-1">
                 <p className="font-semibold text-[#123B72] flex items-center gap-1.5">
                   <ShieldCheck className="w-3.5 h-3.5 text-[#1769AA]" />
@@ -1194,24 +1558,32 @@ export function CbtPortalPage() {
                   Once submitted, your examination answers will be locked and
                   cannot be changed.
                 </p>
-                <div className="bg-[#F5F8FC] border border-slate-200 rounded-lg p-4 space-y-1.5 font-mono-tabular text-xs">
-                  <div className="flex justify-between">
-                    <span>Answered Questions:</span>
-                    <strong className="text-[#123B72]">
-                      {answeredCount} of {questions.length}
-                    </strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Unanswered Questions:</span>
-                    <strong className="text-[#E83E8C]">
-                      {questions.length - answeredCount}
-                    </strong>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Time Remaining:</span>
-                    <strong className="text-[#1769AA]">
-                      {formatCountdownTime(remainingSeconds)}
-                    </strong>
+                <div className="bg-[#F5F8FC] border border-slate-200 rounded-lg p-4 space-y-3">
+                  <ExamProgressBar
+                    variant="compact"
+                    questions={questions}
+                    answers={answers}
+                    currentIndex={currentIndex}
+                  />
+                  <div className="space-y-1.5 font-mono-tabular text-xs pt-2 border-t border-slate-200">
+                    <div className="flex justify-between">
+                      <span>Answered Questions:</span>
+                      <strong className="text-[#123B72]">
+                        {answeredCount} of {questions.length}
+                      </strong>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Unanswered Questions:</span>
+                      <strong className="text-[#E83E8C]">
+                        {questions.length - answeredCount}
+                      </strong>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Time Remaining:</span>
+                      <strong className="text-[#1769AA]">
+                        {formatCountdownTime(remainingSeconds)}
+                      </strong>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1232,6 +1604,43 @@ export function CbtPortalPage() {
                 >
                   {submittingExam ? 'Submitting...' : 'Confirm & Submit'}
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Diagram Zoom Lightbox Modal */}
+        {zoomedDiagramUrl && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Enlarged question diagram"
+            onClick={() => setZoomedDiagramUrl(null)}
+            className="fixed inset-0 z-50 bg-slate-900/80 flex items-center justify-center p-4"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white border border-slate-200 rounded-2xl max-w-4xl w-full p-4 sm:p-6 space-y-3 shadow-2xl"
+            >
+              <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                <p className="font-display text-sm font-bold text-[#123B72]">
+                  Question {currentIndex + 1} Diagram
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setZoomedDiagramUrl(null)}
+                  className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                  aria-label="Close enlarged diagram"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="bg-[#F5F8FC] rounded-xl p-3 flex items-center justify-center max-h-[75vh] overflow-auto">
+                <img
+                  src={zoomedDiagramUrl}
+                  alt={`Enlarged diagram for Question ${currentIndex + 1}`}
+                  className="max-h-[70vh] w-auto object-contain rounded"
+                />
               </div>
             </div>
           </div>

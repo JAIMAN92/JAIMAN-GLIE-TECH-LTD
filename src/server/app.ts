@@ -9,7 +9,7 @@ export function createApiApp() {
   const app = express();
 
   app.set('trust proxy', true);
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '6mb' }));
 
   // Security headers for API & HTML responses
   app.use((_req, res, next) => {

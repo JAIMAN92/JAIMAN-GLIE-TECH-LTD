@@ -3,6 +3,7 @@ import { and, asc, count, desc, eq, inArray, like, sql } from 'drizzle-orm';
 import { db, getDatabaseUrl, isDatabaseConfigured } from '../../db/index.ts';
 import {
   adminActivityLogs,
+  adminSessions,
   admins,
   announcements,
   classArms,
@@ -19,10 +20,12 @@ import {
 } from '../../db/schema.ts';
 import {
   type AdminRequest,
+  ensureQuestionColumns,
   logAdminActivity,
   normalizeAdminRole,
   requireAdmin,
   requireSuperAdmin,
+  sanitizeQuestionImageUrl,
 } from '../authMiddleware.ts';
 import {
   escapeCsvCell,
@@ -567,7 +570,7 @@ router.get('/class-arms', async (req: AdminRequest, res) => {
   }
 });
 
-router.post('/class-arms', async (req: AdminRequest, res) => {
+router.post('/class-arms', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const { schoolId, classLevel, armName, isActive } = req.body ?? {};
     if (
@@ -625,7 +628,7 @@ router.post('/class-arms', async (req: AdminRequest, res) => {
   }
 });
 
-router.post('/class-arms/bulk', async (req: AdminRequest, res) => {
+router.post('/class-arms/bulk', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const { schoolId, classLevels, armNames } = req.body ?? {};
     if (
@@ -706,7 +709,7 @@ router.post('/class-arms/bulk', async (req: AdminRequest, res) => {
   }
 });
 
-router.put('/class-arms/:id', async (req: AdminRequest, res) => {
+router.put('/class-arms/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     const { schoolId, classLevel, armName, isActive } = req.body ?? {};
@@ -750,7 +753,7 @@ router.put('/class-arms/:id', async (req: AdminRequest, res) => {
   }
 });
 
-router.patch('/class-arms/:id/toggle', async (req: AdminRequest, res) => {
+router.patch('/class-arms/:id/toggle', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     const [existing] = await db
@@ -775,7 +778,7 @@ router.patch('/class-arms/:id/toggle', async (req: AdminRequest, res) => {
   }
 });
 
-router.delete('/class-arms/:id', async (req: AdminRequest, res) => {
+router.delete('/class-arms/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     await db.delete(classArms).where(eq(classArms.id, id));
@@ -1279,6 +1282,7 @@ router.delete('/subjects/:id', requireSuperAdmin, async (req: AdminRequest, res)
 
 router.get('/questions', async (req: AdminRequest, res) => {
   try {
+    await ensureQuestionColumns();
     const subjectId = req.query.subjectId ? Number(req.query.subjectId) : null;
     const rows = await db
       .select({
@@ -1288,6 +1292,7 @@ router.get('/questions', async (req: AdminRequest, res) => {
         subjectCode: subjects.code,
         topic: questions.topic,
         questionText: questions.questionText,
+        imageUrl: questions.imageUrl,
         optionA: questions.optionA,
         optionB: questions.optionB,
         optionC: questions.optionC,
@@ -1310,10 +1315,12 @@ router.get('/questions', async (req: AdminRequest, res) => {
 
 router.post('/questions', async (req: AdminRequest, res) => {
   try {
+    await ensureQuestionColumns();
     const {
       subjectId,
       topic,
       questionText,
+      imageUrl,
       optionA,
       optionB,
       optionC,
@@ -1342,12 +1349,21 @@ router.post('/questions', async (req: AdminRequest, res) => {
       });
     }
 
+    const cleanImageUrl = sanitizeQuestionImageUrl(imageUrl);
+    if (cleanImageUrl === null) {
+      return res.status(400).json({
+        error:
+          'Invalid question diagram image. Upload a PNG/JPG/WebP/GIF/SVG image under 900KB or provide an http(s) URL.',
+      });
+    }
+
     const [created] = await db
       .insert(questions)
       .values({
         subjectId: Number(subjectId),
         topic: typeof topic === 'string' && topic.trim() ? topic.trim() : 'General',
         questionText: questionText.trim(),
+        imageUrl: cleanImageUrl,
         optionA: optionA.trim(),
         optionB: optionB.trim(),
         optionC: optionC.trim(),
@@ -1366,6 +1382,7 @@ router.post('/questions', async (req: AdminRequest, res) => {
 
 router.post('/questions/import', async (req: AdminRequest, res) => {
   try {
+    await ensureQuestionColumns();
     const { subjectId, csvText } = req.body ?? {};
     if (
       !Number.isInteger(Number(subjectId)) ||
@@ -1390,6 +1407,9 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
       topic: header.findIndex((h) => h === 'topic'),
       q: header.findIndex((h) =>
         ['questiontext', 'question_text', 'question'].includes(h)
+      ),
+      imageUrl: header.findIndex((h) =>
+        ['imageurl', 'image_url', 'image', 'diagram', 'diagramurl'].includes(h)
       ),
       a: header.findIndex((h) => ['optiona', 'option_a', 'a'].includes(h)),
       b: header.findIndex((h) => ['optionb', 'option_b', 'b'].includes(h)),
@@ -1428,6 +1448,8 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
       const correctOption = (cols[idx.ans] ?? '').trim().toUpperCase();
       const topic = idx.topic >= 0 ? (cols[idx.topic] ?? '').trim() || 'General' : 'General';
       const marks = idx.marks >= 0 ? Math.max(1, Number(cols[idx.marks]) || 1) : 1;
+      const rawImageUrl = idx.imageUrl >= 0 ? (cols[idx.imageUrl] ?? '').trim() : '';
+      const cleanImageUrl = sanitizeQuestionImageUrl(rawImageUrl) ?? '';
 
       if (
         !questionText ||
@@ -1445,6 +1467,7 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
         subjectId: Number(subjectId),
         topic,
         questionText,
+        imageUrl: cleanImageUrl,
         optionA,
         optionB,
         optionC,
@@ -1472,6 +1495,7 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
 
 router.post('/questions/bulk', async (req: AdminRequest, res) => {
   try {
+    await ensureQuestionColumns();
     const { subjectId, examId, items } = req.body ?? {};
     const targetSubjectId = Number(subjectId);
 
@@ -1523,6 +1547,7 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
       subjectId: number;
       topic: string;
       questionText: string;
+      imageUrl: string;
       optionA: string;
       optionB: string;
       optionC: string;
@@ -1543,6 +1568,7 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
         .toUpperCase();
       const topic = String(rawItem?.topic ?? '').trim() || 'General';
       const marks = Math.max(1, Math.min(100, Number(rawItem?.marks) || 1));
+      const cleanImageUrl = sanitizeQuestionImageUrl(rawItem?.imageUrl);
 
       if (
         !questionText ||
@@ -1556,10 +1582,16 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
         return;
       }
 
+      if (cleanImageUrl === null) {
+        errors.push(`Item #${index + 1}: invalid or oversized diagram image`);
+        return;
+      }
+
       validRows.push({
         subjectId: targetSubjectId,
         topic: topic.slice(0, 120),
         questionText: questionText.slice(0, 4000),
+        imageUrl: cleanImageUrl,
         optionA: optionA.slice(0, 1000),
         optionB: optionB.slice(0, 1000),
         optionC: optionC.slice(0, 1000),
@@ -1622,11 +1654,13 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
 
 router.put('/questions/:id', async (req: AdminRequest, res) => {
   try {
+    await ensureQuestionColumns();
     const id = Number(req.params.id);
     const {
       subjectId,
       topic,
       questionText,
+      imageUrl,
       optionA,
       optionB,
       optionC,
@@ -1634,6 +1668,18 @@ router.put('/questions/:id', async (req: AdminRequest, res) => {
       correctOption,
       marks,
     } = req.body ?? {};
+
+    let validatedImageUpdate: { imageUrl: string } | Record<string, never> = {};
+    if (imageUrl !== undefined) {
+      const cleanImageUrl = sanitizeQuestionImageUrl(imageUrl);
+      if (cleanImageUrl === null) {
+        return res.status(400).json({
+          error:
+            'Invalid question diagram image. Upload a PNG/JPG/WebP/GIF/SVG image under 900KB or provide an http(s) URL.',
+        });
+      }
+      validatedImageUpdate = { imageUrl: cleanImageUrl };
+    }
 
     const [updated] = await db
       .update(questions)
@@ -1645,6 +1691,7 @@ router.put('/questions/:id', async (req: AdminRequest, res) => {
         ...(typeof questionText === 'string'
           ? { questionText: questionText.trim() }
           : {}),
+        ...validatedImageUpdate,
         ...(typeof optionA === 'string' ? { optionA: optionA.trim() } : {}),
         ...(typeof optionB === 'string' ? { optionB: optionB.trim() } : {}),
         ...(typeof optionC === 'string' ? { optionC: optionC.trim() } : {}),

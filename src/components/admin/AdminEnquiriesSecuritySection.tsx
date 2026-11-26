@@ -91,25 +91,28 @@ export function AdminEnquiriesSecuritySection({
     }
   }, [token]);
 
+  const isSuperAdmin = admin?.role === 'super_admin';
+
   const loadSecurityData = useCallback(async () => {
-    const [sesRes, logRes] = await Promise.all([
-      fetch('/api/admin/sessions', {
-        headers: { Authorization: `Bearer ${token}` },
-      }),
-      fetch('/api/admin/activity-logs', {
-        headers: { Authorization: `Bearer ${token}` },
-      }),
-    ]);
+    const sesRes = await fetch('/api/admin/sessions', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     if (sesRes.ok) {
       const d = await sesRes.json();
       setSessions(d.sessions || []);
       setCurrentSessionId(d.currentSessionId ?? null);
     }
-    if (logRes.ok) {
-      const d = await logRes.json();
-      setLogs(d.logs || []);
+
+    if (isSuperAdmin) {
+      const logRes = await fetch('/api/admin/activity-logs', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (logRes.ok) {
+        const d = await logRes.json();
+        setLogs(d.logs || []);
+      }
     }
-  }, [token]);
+  }, [token, isSuperAdmin]);
 
   useEffect(() => {
     if (mode === 'enquiries') loadEnquiries();
@@ -644,44 +647,46 @@ export function AdminEnquiriesSecuritySection({
         </div>
       </div>
 
-      {/* Administrative Activity Logs */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200">
-          <h3 className="font-display text-base font-bold text-[#123B72]">
-            Administrative Activity Logs
-          </h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs sm:text-sm">
-            <thead className="bg-[#F5F8FC] text-xs text-slate-500 border-b border-slate-200">
-              <tr>
-                <th className="px-4 py-3">Admin</th>
-                <th className="px-4 py-3">Action</th>
-                <th className="px-4 py-3">Details</th>
-                <th className="px-4 py-3 text-right">Timestamp</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {logs.map((log) => (
-                <tr key={log.id}>
-                  <td className="px-4 py-3 font-medium text-[#123B72]">
-                    {log.adminLabel}
-                  </td>
-                  <td className="px-4 py-3 font-mono-tabular text-xs text-[#1769AA]">
-                    {log.action}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {log.targetDetails}
-                  </td>
-                  <td className="px-4 py-3 text-right font-mono-tabular text-xs text-slate-500">
-                    {new Date(log.createdAt).toLocaleString()}
-                  </td>
+      {/* Administrative Activity Logs (Super Admin Only) */}
+      {isSuperAdmin && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-200">
+            <h3 className="font-display text-base font-bold text-[#123B72]">
+              Administrative Activity Logs
+            </h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs sm:text-sm">
+              <thead className="bg-[#F5F8FC] text-xs text-slate-500 border-b border-slate-200">
+                <tr>
+                  <th className="px-4 py-3">Admin</th>
+                  <th className="px-4 py-3">Action</th>
+                  <th className="px-4 py-3">Details</th>
+                  <th className="px-4 py-3 text-right">Timestamp</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {logs.map((log) => (
+                  <tr key={log.id}>
+                    <td className="px-4 py-3 font-medium text-[#123B72]">
+                      {log.adminLabel}
+                    </td>
+                    <td className="px-4 py-3 font-mono-tabular text-xs text-[#1769AA]">
+                      {log.action}
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">
+                      {log.targetDetails}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono-tabular text-xs text-slate-500">
+                      {new Date(log.createdAt).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

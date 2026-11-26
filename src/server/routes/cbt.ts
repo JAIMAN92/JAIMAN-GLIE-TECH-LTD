@@ -16,6 +16,7 @@ import {
 import {
   checkLoginLockout,
   clearLoginFailures,
+  ensureQuestionColumns,
   recordFailedLogin,
   requireStudent,
   type StudentRequest,
@@ -305,6 +306,8 @@ router.post(
         attempt = inserted;
       }
 
+      await ensureQuestionColumns();
+
       // Fetch questions WITHOUT leaking correctOption!
       const examQRows = await db
         .select({
@@ -312,6 +315,7 @@ router.post(
           id: questions.id,
           topic: questions.topic,
           questionText: questions.questionText,
+          imageUrl: questions.imageUrl,
           optionA: questions.optionA,
           optionB: questions.optionB,
           optionC: questions.optionC,
@@ -428,6 +432,108 @@ router.post(
     } catch (error) {
       console.error('Save answer error:', error);
       res.status(500).json({ error: 'Failed to save answer.' });
+    }
+  }
+);
+
+router.post(
+  '/attempts/:attemptId/answers/batch',
+  requireStudent,
+  async (req: StudentRequest, res) => {
+    try {
+      const attemptId = Number(req.params.attemptId);
+      const rawAnswers = req.body?.answers;
+
+      if (
+        !Number.isInteger(attemptId) ||
+        !rawAnswers ||
+        typeof rawAnswers !== 'object' ||
+        Array.isArray(rawAnswers)
+      ) {
+        return res.status(400).json({ error: 'Invalid batch answers payload.' });
+      }
+
+      const [attempt] = await db
+        .select()
+        .from(examAttempts)
+        .where(
+          and(
+            eq(examAttempts.id, attemptId),
+            eq(examAttempts.studentId, req.student!.id)
+          )
+        )
+        .limit(1);
+
+      if (!attempt) {
+        return res.status(404).json({ error: 'Examination attempt not found.' });
+      }
+
+      if (attempt.status === 'submitted') {
+        return res.status(409).json({
+          error: 'This examination is already submitted and locked.',
+        });
+      }
+
+      if (Date.now() > attempt.expiresAt.getTime() + 15000) {
+        return res.status(409).json({
+          error: 'Examination time has elapsed.',
+        });
+      }
+
+      const assignedRows = await db
+        .select({ questionId: examQuestions.questionId })
+        .from(examQuestions)
+        .where(eq(examQuestions.examId, attempt.examId));
+      const allowedQuestionIds = new Set(assignedRows.map((r) => r.questionId));
+
+      const now = new Date();
+      const entriesToSave: Array<{
+        attemptId: number;
+        questionId: number;
+        selectedOption: string;
+        updatedAt: Date;
+      }> = [];
+
+      for (const [rawQId, rawOpt] of Object.entries(
+        rawAnswers as Record<string, unknown>
+      )) {
+        const questionId = Number(rawQId);
+        const selectedOption = String(rawOpt ?? '').trim().toUpperCase();
+        if (
+          Number.isInteger(questionId) &&
+          allowedQuestionIds.has(questionId) &&
+          ['A', 'B', 'C', 'D'].includes(selectedOption)
+        ) {
+          entriesToSave.push({
+            attemptId,
+            questionId,
+            selectedOption,
+            updatedAt: now,
+          });
+        }
+      }
+
+      if (entriesToSave.length > 0) {
+        await db
+          .insert(studentAnswers)
+          .values(entriesToSave)
+          .onConflictDoUpdate({
+            target: [studentAnswers.attemptId, studentAnswers.questionId],
+            set: {
+              selectedOption: sql`excluded.selected_option`,
+              updatedAt: sql`excluded.updated_at`,
+            },
+          });
+      }
+
+      res.json({
+        saved: true,
+        savedCount: entriesToSave.length,
+        savedAt: now.toISOString(),
+      });
+    } catch (error) {
+      console.error('Batch auto-save answers error:', error);
+      res.status(500).json({ error: 'Failed to auto-save answers.' });
     }
   }
 );

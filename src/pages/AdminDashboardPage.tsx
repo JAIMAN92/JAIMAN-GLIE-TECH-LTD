@@ -16,6 +16,7 @@ import {
   School,
   Settings,
   ShieldCheck,
+  UserCog,
   X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
@@ -27,6 +28,8 @@ import { AdminClassesArmsSection } from '../components/admin/AdminClassesArmsSec
 import { AdminCbtManagementSection } from '../components/admin/AdminCbtManagementSection.tsx';
 import { AdminEnquiriesSecuritySection } from '../components/admin/AdminEnquiriesSecuritySection.tsx';
 import { AdminDatabaseSection } from '../components/admin/AdminDatabaseSection.tsx';
+import { AdminAccountsSection } from '../components/admin/AdminAccountsSection.tsx';
+import type { AdminRole } from '../shared/types.ts';
 
 type SectionKey =
   | 'overview'
@@ -40,31 +43,101 @@ type SectionKey =
   | 'enquiries'
   | 'settings'
   | 'database'
+  | 'admin_accounts'
   | 'security';
 
 const NAV_ITEMS: Array<{
   key: SectionKey;
   label: string;
   icon: typeof LayoutDashboard;
+  roles: AdminRole[];
 }> = [
-  { key: 'overview', label: 'Dashboard Overview', icon: LayoutDashboard },
-  { key: 'website', label: 'Website Management', icon: Globe },
-  { key: 'schools', label: 'School Management', icon: School },
-  { key: 'classes_arms', label: 'Classes & Arms', icon: Layers },
-  { key: 'students', label: 'Student Management', icon: GraduationCap },
-  { key: 'examinations', label: 'Examination Management', icon: ClipboardList },
-  { key: 'questions', label: 'Question Management', icon: FileQuestion },
-  { key: 'results', label: 'Results Management', icon: BarChart3 },
-  { key: 'enquiries', label: 'Contact Enquiries', icon: Inbox },
-  { key: 'settings', label: 'Website Settings', icon: Settings },
-  { key: 'database', label: 'Database & Supabase', icon: Database },
-  { key: 'security', label: 'Profile & Security', icon: ShieldCheck },
+  {
+    key: 'overview',
+    label: 'Dashboard Overview',
+    icon: LayoutDashboard,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'website',
+    label: 'Website Management',
+    icon: Globe,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'schools',
+    label: 'School Management',
+    icon: School,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'classes_arms',
+    label: 'Classes & Arms',
+    icon: Layers,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'students',
+    label: 'Student Management',
+    icon: GraduationCap,
+    roles: ['super_admin', 'data_entry'],
+  },
+  {
+    key: 'examinations',
+    label: 'Examination Management',
+    icon: ClipboardList,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'questions',
+    label: 'Question Bank',
+    icon: FileQuestion,
+    roles: ['super_admin', 'data_entry'],
+  },
+  {
+    key: 'results',
+    label: 'Results Management',
+    icon: BarChart3,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'enquiries',
+    label: 'Contact Enquiries',
+    icon: Inbox,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'settings',
+    label: 'Website Settings',
+    icon: Settings,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'admin_accounts',
+    label: 'Admin Accounts',
+    icon: UserCog,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'database',
+    label: 'Database & Supabase',
+    icon: Database,
+    roles: ['super_admin'],
+  },
+  {
+    key: 'security',
+    label: 'Profile & Security',
+    icon: ShieldCheck,
+    roles: ['super_admin', 'data_entry'],
+  },
 ];
 
 export function AdminDashboardPage() {
   const navigate = useNavigate();
   const { adminToken, admin, clearAdminSession } = useAuth();
-  const [activeSection, setActiveSection] = useState<SectionKey>('overview');
+  const [activeSection, setActiveSection] = useState<SectionKey>(() =>
+    admin?.role === 'data_entry' ? 'students' : 'overview'
+  );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -74,8 +147,13 @@ export function AdminDashboardPage() {
     }
     if (admin.mustChangePassword) {
       navigate('/admin/login', { replace: true });
+      return;
     }
-  }, [adminToken, admin, navigate]);
+    const allowed = NAV_ITEMS.filter((item) => item.roles.includes(admin.role));
+    if (!allowed.some((item) => item.key === activeSection)) {
+      setActiveSection(allowed[0]?.key || 'students');
+    }
+  }, [adminToken, admin, navigate, activeSection]);
 
   const handleLogout = async () => {
     if (adminToken) {
@@ -92,8 +170,13 @@ export function AdminDashboardPage() {
     return null;
   }
 
+  const isSuperAdmin = admin.role === 'super_admin';
+  const visibleNavItems = NAV_ITEMS.filter((item) =>
+    item.roles.includes(admin.role)
+  );
   const activeLabel =
-    NAV_ITEMS.find((i) => i.key === activeSection)?.label || 'Admin Dashboard';
+    visibleNavItems.find((i) => i.key === activeSection)?.label ||
+    'Admin Dashboard';
 
   return (
     <div className="min-h-screen bg-[#F5F8FC] flex">
@@ -106,7 +189,7 @@ export function AdminDashboardPage() {
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeSection === item.key;
             return (
@@ -128,11 +211,16 @@ export function AdminDashboardPage() {
         </nav>
 
         <div className="p-4 border-t border-white/15 space-y-2">
-          <div className="px-2">
+          <div className="px-2 space-y-0.5">
             <p className="text-xs font-semibold text-white truncate">
               {admin.fullName}
             </p>
             <p className="text-[11px] text-slate-300 truncate">{admin.email}</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-[#D4AF37]">
+              {isSuperAdmin
+                ? 'Full Administrator'
+                : 'Students & Questions Only'}
+            </p>
           </div>
           <button
             type="button"
@@ -164,7 +252,7 @@ export function AdminDashboardPage() {
               </button>
             </div>
             <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-              {NAV_ITEMS.map((item) => {
+              {visibleNavItems.map((item) => {
                 const Icon = item.icon;
                 const isActive = activeSection === item.key;
                 return (
@@ -234,25 +322,25 @@ export function AdminDashboardPage() {
         </header>
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-          {activeSection === 'overview' && (
+          {isSuperAdmin && activeSection === 'overview' && (
             <AdminOverviewSection token={adminToken} />
           )}
-          {activeSection === 'website' && (
+          {isSuperAdmin && activeSection === 'website' && (
             <AdminWebsiteSection token={adminToken} mode="management" />
           )}
-          {activeSection === 'settings' && (
+          {isSuperAdmin && activeSection === 'settings' && (
             <AdminWebsiteSection token={adminToken} mode="settings" />
           )}
-          {activeSection === 'schools' && (
+          {isSuperAdmin && activeSection === 'schools' && (
             <AdminSchoolsStudentsSection token={adminToken} mode="schools" />
           )}
-          {activeSection === 'classes_arms' && (
+          {isSuperAdmin && activeSection === 'classes_arms' && (
             <AdminClassesArmsSection token={adminToken} />
           )}
           {activeSection === 'students' && (
             <AdminSchoolsStudentsSection token={adminToken} mode="students" />
           )}
-          {activeSection === 'examinations' && (
+          {isSuperAdmin && activeSection === 'examinations' && (
             <AdminCbtManagementSection
               token={adminToken}
               mode="examinations"
@@ -261,17 +349,20 @@ export function AdminDashboardPage() {
           {activeSection === 'questions' && (
             <AdminCbtManagementSection token={adminToken} mode="questions" />
           )}
-          {activeSection === 'results' && (
+          {isSuperAdmin && activeSection === 'results' && (
             <AdminCbtManagementSection token={adminToken} mode="results" />
           )}
-          {activeSection === 'enquiries' && (
+          {isSuperAdmin && activeSection === 'enquiries' && (
             <AdminEnquiriesSecuritySection
               token={adminToken}
               mode="enquiries"
               onLogout={handleLogout}
             />
           )}
-          {activeSection === 'database' && (
+          {isSuperAdmin && activeSection === 'admin_accounts' && (
+            <AdminAccountsSection token={adminToken} />
+          )}
+          {isSuperAdmin && activeSection === 'database' && (
             <AdminDatabaseSection token={adminToken} />
           )}
           {activeSection === 'security' && (

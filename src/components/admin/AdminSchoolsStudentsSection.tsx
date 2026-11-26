@@ -279,12 +279,16 @@ export function AdminSchoolsStudentsSection({
     } else {
       setEditingStudent(null);
       setAutoGenerateExamNumber(true);
+      const defaultSchoolId = schools[0] ? String(schools[0].id) : '';
+      const scopedArm = classArms.find(
+        (c) => c.isActive && String(c.schoolId ?? '') === defaultSchoolId
+      );
       setStudentForm({
-        schoolId: schools[0] ? String(schools[0].id) : '',
+        schoolId: defaultSchoolId,
         examNumber: '',
         fullName: '',
-        classLevel: 'SS1',
-        arm: 'A',
+        classLevel: scopedArm ? scopedArm.classLevel : 'SS1',
+        arm: scopedArm ? scopedArm.armName : 'A',
         passcode: '',
       });
     }
@@ -397,7 +401,25 @@ export function AdminSchoolsStudentsSection({
       'SS2',
       'SS3',
       ...classArms.filter((c) => c.isActive).map((c) => c.classLevel),
+      ...students.map((s) => s.classLevel),
     ])
+  );
+
+  const selectedSchoolCustomClasses = Array.from(
+    new Set(
+      classArms
+        .filter(
+          (c) =>
+            c.isActive &&
+            c.schoolId !== null &&
+            String(c.schoolId) === studentForm.schoolId
+        )
+        .map((c) => c.classLevel)
+    )
+  );
+
+  const globalOrOtherClassLevels = availableClassLevels.filter(
+    (c) => !selectedSchoolCustomClasses.includes(c)
   );
 
   const availableArmNames = Array.from(
@@ -1088,7 +1110,7 @@ export function AdminSchoolsStudentsSection({
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Class Level *
+                    Class Level / Category *
                   </label>
                   <select
                     value={studentForm.classLevel}
@@ -1100,11 +1122,30 @@ export function AdminSchoolsStudentsSection({
                     }
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
                   >
-                    {availableClassLevels.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
+                    {selectedSchoolCustomClasses.length > 0 ? (
+                      <>
+                        <optgroup label="Selected School / Agency Classes">
+                          {selectedSchoolCustomClasses.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="Other / Standard Classes">
+                          {globalOrOtherClassLevels.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </optgroup>
+                      </>
+                    ) : (
+                      availableClassLevels.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
                 <div>

@@ -6,10 +6,12 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
+  ImagePlus,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
+import { prepareQuestionImageFile } from '../../lib/imageUpload.ts';
 import {
   type ParsedBulkQuestion,
   parseCsvOrTsvText,
@@ -17,6 +19,7 @@ import {
   parseQaTextBlocks,
   parseSpreadsheetRows,
 } from '../../shared/questionBulkParser.ts';
+import { MathText } from '../MathText.tsx';
 
 interface SubjectOption {
   id: number;
@@ -54,6 +57,7 @@ export function BulkQuestionsUploadModal({
   subjects,
   exams,
   initialSubjectId,
+  embedded = false,
   onClose,
   onSuccess,
 }: {
@@ -61,7 +65,8 @@ export function BulkQuestionsUploadModal({
   subjects: SubjectOption[];
   exams: ExamOption[];
   initialSubjectId: string;
-  onClose: () => void;
+  embedded?: boolean;
+  onClose?: () => void;
   onSuccess: (summaryMessage: string) => void;
 }) {
   const [sourceMode, setSourceMode] = useState<UploadSourceMode>('file');
@@ -81,6 +86,10 @@ export function BulkQuestionsUploadModal({
   const [fileParseError, setFileParseError] = useState('');
 
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
+  const [imageOverrides, setImageOverrides] = useState<Record<string, string>>(
+    {}
+  );
+  const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
 
@@ -159,6 +168,7 @@ export function BulkQuestionsUploadModal({
   const handleFileChange = async (file: File | undefined) => {
     if (!file) return;
     setRemovedIds(new Set());
+    setImageOverrides({});
     setFileParseError('');
     setSubmitError('');
     setFileName(file.name);
@@ -192,9 +202,9 @@ export function BulkQuestionsUploadModal({
 
   const downloadCsvTemplate = () => {
     const sample = [
-      'topic,questionText,optionA,optionB,optionC,optionD,correctOption,marks',
-      'Algebra,"Solve for x in 2x + 4 = 10.",2,3,4,5,B,2',
-      'Geometry,"What is the sum of interior angles of a triangle?",90 degrees,180 degrees,270 degrees,360 degrees,B,2',
+      'topic,questionText,optionA,optionB,optionC,optionD,correctOption,marks,imageUrl',
+      'Algebra,"Solve for x in 2x + 4 = 10.",2,3,4,5,B,2,',
+      'Geometry,"What is the sum of interior angles of a triangle?",90 degrees,180 degrees,270 degrees,360 degrees,B,2,',
     ].join('\n');
     const blob = new Blob([sample], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -223,6 +233,27 @@ export function BulkQuestionsUploadModal({
     });
   };
 
+  const handlePreviewImageUpload = async (
+    questionId: string,
+    file: File | undefined
+  ) => {
+    if (!file) return;
+    setSubmitError('');
+    setUploadingItemId(questionId);
+    try {
+      const dataUrl = await prepareQuestionImageFile(file);
+      setImageOverrides((prev) => ({ ...prev, [questionId]: dataUrl }));
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to process selected image.'
+      );
+    } finally {
+      setUploadingItemId(null);
+    }
+  };
+
   const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError('');
@@ -246,16 +277,23 @@ export function BulkQuestionsUploadModal({
         body: JSON.stringify({
           subjectId: Number(subjectId),
           examId: examId ? Number(examId) : null,
-          items: activeQuestions.map((q: ParsedBulkQuestion) => ({
-            topic: q.topic,
-            questionText: q.questionText,
-            optionA: q.optionA,
-            optionB: q.optionB,
-            optionC: q.optionC,
-            optionD: q.optionD,
-            correctOption: q.correctOption,
-            marks: q.marks,
-          })),
+          items: activeQuestions.map((q: ParsedBulkQuestion) => {
+            const effectiveImage =
+              imageOverrides[q.id] !== undefined
+                ? imageOverrides[q.id]
+                : q.imageUrl || '';
+            return {
+              topic: q.topic,
+              questionText: q.questionText,
+              imageUrl: effectiveImage,
+              optionA: q.optionA,
+              optionB: q.optionB,
+              optionC: q.optionC,
+              optionD: q.optionD,
+              correctOption: q.correctOption,
+              marks: q.marks,
+            };
+          }),
         }),
       });
       const json = await res.json();
@@ -277,27 +315,45 @@ export function BulkQuestionsUploadModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/65 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl max-w-4xl w-full p-6 space-y-5 max-h-[92vh] overflow-y-auto">
+    <div
+      className={
+        embedded
+          ? 'w-full'
+          : 'fixed inset-0 z-50 bg-slate-900/65 flex items-center justify-center p-4'
+      }
+    >
+      <div
+        className={
+          embedded
+            ? 'bg-white border border-slate-200 rounded-xl w-full p-5 sm:p-6 space-y-5'
+            : 'bg-white rounded-2xl max-w-4xl w-full p-6 space-y-5 max-h-[92vh] overflow-y-auto'
+        }
+      >
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4">
           <div>
-            <h3 className="font-display text-xl font-bold text-[#123B72]">
-              Bulk Questions &amp; Answers Upload
+            <h3 className="font-display text-lg sm:text-xl font-bold text-[#123B72]">
+              Bulk Questions &amp; Answers Upload Studio
             </h3>
             <p className="text-xs text-slate-600 mt-1">
               Upload an Excel (.xlsx), CSV, JSON, or text Q&amp;A file—or paste
               numbered questions and answers directly from Word or spreadsheets
-              with live preview.
+              with live preview. Inline{' '}
+              <code className="px-1 py-0.5 rounded bg-slate-100">$...$</code> and
+              block{' '}
+              <code className="px-1 py-0.5 rounded bg-slate-100">$$...$$</code>{' '}
+              LaTeX equations render automatically.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close bulk upload modal"
-            className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {!embedded && onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close bulk upload modal"
+              className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
         </div>
 
         {submitError && (
@@ -467,7 +523,9 @@ export function BulkQuestionsUploadModal({
               </p>
               <p className="text-xs text-slate-500 mt-1">
                 Spreadsheets should include columns: questionText, optionA,
-                optionB, optionC, optionD, correctOption (optional: topic, marks)
+                optionB, optionC, optionD, correctOption (optional: topic,
+                marks, imageUrl). You can also attach diagram image files to any
+                question in the preview below.
               </p>
             </label>
           )}
@@ -583,32 +641,85 @@ export function BulkQuestionsUploadModal({
               )}
 
               {activeQuestions.length > 0 && (
-                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
-                  {activeQuestions.map((q, idx) => (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {activeQuestions.map((q, idx) => {
+                    const effectiveImage =
+                      imageOverrides[q.id] !== undefined
+                        ? imageOverrides[q.id]
+                        : q.imageUrl || '';
+                    return (
                     <div
                       key={q.id}
                       className="p-3.5 rounded-xl border border-slate-200 bg-white space-y-2"
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div className="text-xs space-y-0.5">
+                        <div className="text-xs space-y-1 min-w-0 flex-1">
                           <p className="font-semibold text-[#1769AA]">
                             #{idx + 1} · {q.topic} ·{' '}
                             <span className="font-mono-tabular">
                               {q.marks} mark{q.marks > 1 ? 's' : ''}
                             </span>
                           </p>
-                          <p className="text-sm font-medium text-[#1E293B]">
-                            {q.questionText}
-                          </p>
+                          <div className="text-sm font-medium text-[#1E293B] whitespace-pre-line">
+                            <MathText text={q.questionText} />
+                          </div>
+                          {effectiveImage && (
+                            <div className="mt-2 inline-block rounded-lg border border-slate-200 bg-[#F5F8FC] p-2">
+                              <img
+                                src={effectiveImage}
+                                alt={`Diagram preview for question ${idx + 1}`}
+                                className="max-h-36 w-auto object-contain rounded"
+                              />
+                            </div>
+                          )}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRemovePreview(q.id)}
-                          title="Exclude this question"
-                          className="p-1.5 rounded text-red-600 hover:bg-red-50 shrink-0"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <label
+                            title="Attach or replace diagram image"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-[#F5F8FC] text-[11px] font-semibold text-[#123B72] cursor-pointer hover:bg-slate-100"
+                          >
+                            <ImagePlus className="w-3.5 h-3.5 text-[#1769AA]" />
+                            {uploadingItemId === q.id
+                              ? 'Optimizing...'
+                              : effectiveImage
+                                ? 'Change Image'
+                                : 'Attach Image'}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              disabled={uploadingItemId === q.id}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                e.target.value = '';
+                                handlePreviewImageUpload(q.id, file);
+                              }}
+                              className="sr-only"
+                            />
+                          </label>
+                          {effectiveImage && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setImageOverrides((prev) => ({
+                                  ...prev,
+                                  [q.id]: '',
+                                }))
+                              }
+                              title="Remove diagram image"
+                              className="p-1.5 rounded text-slate-500 hover:bg-slate-100"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleRemovePreview(q.id)}
+                            title="Exclude this question"
+                            className="p-1.5 rounded text-red-600 hover:bg-red-50"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                         {(['A', 'B', 'C', 'D'] as const).map((opt) => {
@@ -624,7 +735,7 @@ export function BulkQuestionsUploadModal({
                           return (
                             <div
                               key={opt}
-                              className={`px-2.5 py-1.5 rounded border truncate ${
+                              className={`px-2.5 py-1.5 rounded border break-words ${
                                 isAns
                                   ? 'border-emerald-500 bg-emerald-50 text-emerald-900 font-semibold'
                                   : 'border-slate-200 bg-[#F5F8FC] text-slate-700'
@@ -633,13 +744,14 @@ export function BulkQuestionsUploadModal({
                               <strong className="font-mono-tabular mr-1">
                                 {opt}.
                               </strong>
-                              {optVal}
+                              <MathText text={optVal} />
                             </div>
                           );
                         })}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -651,13 +763,15 @@ export function BulkQuestionsUploadModal({
               Up to 500 questions per upload batch
             </span>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                Cancel
-              </button>
+              {!embedded && onClose && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              )}
               <button
                 type="submit"
                 disabled={submitting || activeQuestions.length === 0}

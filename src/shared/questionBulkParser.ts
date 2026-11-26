@@ -2,6 +2,7 @@ export interface ParsedBulkQuestion {
   id: string;
   topic: string;
   questionText: string;
+  imageUrl?: string;
   optionA: string;
   optionB: string;
   optionC: string;
@@ -174,6 +175,15 @@ export function parseSpreadsheetRows(
       'questions',
       'questionstem',
     ]),
+    imageUrl: findCol([
+      'imageurl',
+      'image',
+      'diagram',
+      'diagramurl',
+      'figure',
+      'figureurl',
+      'img',
+    ]),
     a: findCol(['optiona', 'a', 'opta', 'choicea', 'answera']),
     b: findCol(['optionb', 'b', 'optb', 'choiceb', 'answerb']),
     c: findCol(['optionc', 'c', 'optc', 'choicec', 'answerc']),
@@ -216,6 +226,8 @@ export function parseSpreadsheetRows(
   for (let i = 1; i < stringRows.length; i++) {
     const cols = stringRows[i];
     const questionText = (cols[idx.q] ?? '').trim();
+    const imageUrl =
+      idx.imageUrl >= 0 ? (cols[idx.imageUrl] ?? '').trim() : '';
     const optionA = (cols[idx.a] ?? '').trim();
     const optionB = (cols[idx.b] ?? '').trim();
     const optionC = (cols[idx.c] ?? '').trim();
@@ -256,6 +268,7 @@ export function parseSpreadsheetRows(
       id: `row-${i}-${Math.random().toString(36).slice(2, 7)}`,
       topic,
       questionText,
+      ...(imageUrl ? { imageUrl } : {}),
       optionA,
       optionB,
       optionC,
@@ -352,12 +365,21 @@ export function parseQaTextBlocks(
     let starMarkedCorrect: 'A' | 'B' | 'C' | 'D' | null = null;
     let topic = defaultTopic;
     let marks = defaultMarks;
+    let imageUrl = '';
     let inOptionsSection = false;
 
     for (const line of blockLines) {
       const topicMatch = line.match(/^topic\s*[:=\-]\s*(.+)$/i);
       if (topicMatch) {
         topic = topicMatch[1].trim() || defaultTopic;
+        continue;
+      }
+
+      const imageMatch = line.match(
+        /^(?:image\s*url|image|diagram\s*url|diagram|figure|img)\s*[:=\-]\s*(.+)$/i
+      );
+      if (imageMatch) {
+        imageUrl = imageMatch[1].trim();
         continue;
       }
 
@@ -435,6 +457,7 @@ export function parseQaTextBlocks(
       id: `txt-${idx}-${Math.random().toString(36).slice(2, 7)}`,
       topic,
       questionText,
+      ...(imageUrl ? { imageUrl } : {}),
       optionA: options.A,
       optionB: options.B,
       optionC: options.C,
@@ -512,6 +535,9 @@ export function parseJsonQuestions(
       const correctOption = resolveCorrectLetter(rawAns, optsObj);
       const topic = String(item.topic ?? '').trim() || defaultTopic;
       const marks = Math.max(1, Number(item.marks) || defaultMarks);
+      const imageUrl = String(
+        item.imageUrl ?? item.image_url ?? item.diagramUrl ?? item.diagram ?? item.image ?? ''
+      ).trim();
 
       if (!questionText) {
         errors.push({ itemLabel: label, reason: 'Missing questionText.' });
@@ -533,6 +559,7 @@ export function parseJsonQuestions(
         id: `json-${idx}-${Math.random().toString(36).slice(2, 7)}`,
         topic,
         questionText,
+        ...(imageUrl ? { imageUrl } : {}),
         optionA: optsObj.A,
         optionB: optsObj.B,
         optionC: optsObj.C,

@@ -19,12 +19,25 @@ export async function ensureAdminRoleColumns(): Promise<void> {
   if (!adminColumnsReadyPromise) {
     adminColumnsReadyPromise = (async () => {
       try {
-        await db.execute(
-          sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'super_admin'`
+        const check = await db.execute(sql`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'admins'
+            AND column_name IN ('role', 'is_active')
+        `);
+        const existing = new Set(
+          (check.rows ?? []).map((r) => String((r as { column_name?: string }).column_name))
         );
-        await db.execute(
-          sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
-        );
+        if (!existing.has('role')) {
+          await db.execute(
+            sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'super_admin'`
+          );
+        }
+        if (!existing.has('is_active')) {
+          await db.execute(
+            sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE`
+          );
+        }
       } catch (err) {
         adminColumnsReadyPromise = null;
         console.warn('Admin column migration check:', err);
@@ -32,6 +45,52 @@ export async function ensureAdminRoleColumns(): Promise<void> {
     })();
   }
   return adminColumnsReadyPromise;
+}
+
+let questionColumnsReadyPromise: Promise<void> | null = null;
+
+export async function ensureQuestionColumns(): Promise<void> {
+  if (!questionColumnsReadyPromise) {
+    questionColumnsReadyPromise = (async () => {
+      try {
+        const check = await db.execute(sql`
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'questions'
+            AND column_name = 'image_url'
+          LIMIT 1
+        `);
+        if (check.rows && check.rows.length > 0) {
+          return;
+        }
+        await db.execute(
+          sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT ''`
+        );
+      } catch (err) {
+        questionColumnsReadyPromise = null;
+        console.warn('Question column migration check:', err);
+      }
+    })();
+  }
+  return questionColumnsReadyPromise;
+}
+
+export function sanitizeQuestionImageUrl(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return '';
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  if (trimmed.length > 1_250_000) return null;
+  if (/^https?:\/\/\S+/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return trimmed;
+  if (
+    /^data:image\/(png|jpeg|jpg|webp|gif|svg\+xml);base64,[a-z0-9+/=]+$/i.test(
+      trimmed
+    )
+  ) {
+    return trimmed;
+  }
+  return null;
 }
 
 export function normalizeAdminRole(raw?: string | null): AdminRole {

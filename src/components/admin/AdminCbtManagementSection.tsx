@@ -8,11 +8,11 @@ import {
   Plus,
   Printer,
   Trash2,
-  Upload,
   Users,
   X,
 } from 'lucide-react';
-import { BulkQuestionsUploadModal } from './BulkQuestionsUploadModal.tsx';
+import { AdminQuestionBankSection } from './AdminQuestionBankSection.tsx';
+import { MathText } from '../MathText.tsx';
 import { exportResultsToPdf } from '../../lib/resultsExport.ts';
 
 interface SubjectRow {
@@ -30,6 +30,7 @@ interface QuestionRow {
   subjectCode: string;
   topic: string;
   questionText: string;
+  imageUrl?: string;
   optionA: string;
   optionB: string;
   optionC: string;
@@ -132,28 +133,6 @@ export function AdminCbtManagementSection({
   const [exportingFormat, setExportingFormat] = useState<'csv' | 'pdf' | null>(null);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
-
-  // Subjects & Questions state
-  const [filterSubjectId, setFilterSubjectId] = useState('');
-  const [filterTopic, setFilterTopic] = useState('');
-  const [newSubName, setNewSubName] = useState('');
-  const [newSubCode, setNewSubCode] = useState('');
-  const [showQuestionModal, setShowQuestionModal] = useState(false);
-  const [editingQuestion, setEditingQuestion] = useState<QuestionRow | null>(
-    null
-  );
-  const [qForm, setQForm] = useState({
-    subjectId: '',
-    topic: 'General',
-    questionText: '',
-    optionA: '',
-    optionB: '',
-    optionC: '',
-    optionD: '',
-    correctOption: 'A',
-    marks: '1',
-  });
-  const [showQImportModal, setShowQImportModal] = useState(false);
 
   // Examination state
   const [showExamModal, setShowExamModal] = useState(false);
@@ -259,103 +238,6 @@ export function AdminCbtManagementSection({
       loadResults();
     }
   }, [mode, loadResults]);
-
-  // Subject Handlers
-  const handleAddSubject = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr('');
-    setMsg('');
-    const res = await fetch('/api/admin/subjects', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name: newSubName, code: newSubCode }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      setErr(json.error || 'Unable to add subject.');
-      return;
-    }
-    setNewSubName('');
-    setNewSubCode('');
-    setMsg(`Added subject: ${json.subject.name}`);
-    loadAll();
-  };
-
-  // Question Handlers
-  const openQuestionModal = (q?: QuestionRow) => {
-    setErr('');
-    if (q) {
-      setEditingQuestion(q);
-      setQForm({
-        subjectId: String(q.subjectId),
-        topic: q.topic,
-        questionText: q.questionText,
-        optionA: q.optionA,
-        optionB: q.optionB,
-        optionC: q.optionC,
-        optionD: q.optionD,
-        correctOption: q.correctOption,
-        marks: String(q.marks),
-      });
-    } else {
-      setEditingQuestion(null);
-      setQForm({
-        subjectId: filterSubjectId || (subjects[0] ? String(subjects[0].id) : ''),
-        topic: 'General',
-        questionText: '',
-        optionA: '',
-        optionB: '',
-        optionC: '',
-        optionD: '',
-        correctOption: 'A',
-        marks: '1',
-      });
-    }
-    setShowQuestionModal(true);
-  };
-
-  const handleSaveQuestion = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr('');
-    setMsg('');
-    const url = editingQuestion
-      ? `/api/admin/questions/${editingQuestion.id}`
-      : '/api/admin/questions';
-    const method = editingQuestion ? 'PUT' : 'POST';
-
-    const res = await fetch(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        ...qForm,
-        subjectId: Number(qForm.subjectId),
-        marks: Number(qForm.marks) || 1,
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      setErr(json.error || 'Unable to save question.');
-      return;
-    }
-    setShowQuestionModal(false);
-    setMsg(editingQuestion ? 'Question updated.' : 'Question added.');
-    loadAll();
-  };
-
-  const deleteQuestion = async (id: number) => {
-    await fetch(`/api/admin/questions/${id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setMsg('Question removed.');
-    loadAll();
-  };
 
   // Examination Handlers
   const openExamModal = (ex?: ExamRow) => {
@@ -567,12 +449,33 @@ export function AdminCbtManagementSection({
     new Set(classArms.filter((c) => c.isActive).map((c) => c.armName))
   );
 
+  const examScopedClasses = Array.from(
+    new Set(
+      classArms
+        .filter(
+          (c) =>
+            c.isActive &&
+            c.schoolId !== null &&
+            examForm.schoolId !== '' &&
+            String(c.schoolId) === examForm.schoolId
+        )
+        .map((c) => c.classLevel)
+    )
+  );
+
+  const examOtherClassLevels = availableClassLevels.filter(
+    (c) => !examScopedClasses.includes(c)
+  );
+
   const examArmOptions = Array.from(
     new Set(
       classArms
         .filter(
           (c) =>
             c.isActive &&
+            (!examForm.schoolId ||
+              c.schoolId === null ||
+              String(c.schoolId) === examForm.schoolId) &&
             (examForm.classLevel === 'ALL' ||
               c.classLevel.toUpperCase() === examForm.classLevel.toUpperCase())
         )
@@ -582,374 +485,15 @@ export function AdminCbtManagementSection({
 
   // QUESTION MANAGEMENT VIEW
   if (mode === 'questions') {
-    const filteredQuestions = questions.filter((q) => {
-      if (filterSubjectId && String(q.subjectId) !== filterSubjectId)
-        return false;
-      if (
-        filterTopic.trim() &&
-        !q.topic.toLowerCase().includes(filterTopic.trim().toLowerCase())
-      )
-        return false;
-      return true;
-    });
-
     return (
-      <div className="space-y-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h2 className="font-display text-2xl font-bold text-[#123B72]">
-              Question Management
-            </h2>
-            <p className="text-sm text-slate-600">
-              Create subjects, organize multiple-choice questions by topic, and
-              bulk-upload questions and answers via Excel, CSV, Word text, or JSON.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2.5">
-            <button
-              type="button"
-              disabled={subjects.length === 0}
-              onClick={() => {
-                setErr('');
-                setMsg('');
-                setShowQImportModal(true);
-              }}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#123B72] text-[#123B72] text-sm font-semibold hover:bg-[#123B72] hover:text-white disabled:opacity-50"
-            >
-              <Upload className="w-4 h-4" />
-              Bulk Upload Q&amp;A
-            </button>
-            <button
-              type="button"
-              disabled={subjects.length === 0}
-              onClick={() => openQuestionModal()}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold hover:bg-[#d1327c] disabled:opacity-50"
-            >
-              <Plus className="w-4 h-4" />
-              Add Question
-            </button>
-          </div>
-        </div>
-
-        {msg && (
-          <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4" />
-            <span>{msg}</span>
-          </div>
-        )}
-        {err && (
-          <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm">
-            {err}
-          </div>
-        )}
-
-        {/* Quick Subject Creator & Filter */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          <form
-            onSubmit={handleAddSubject}
-            className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-end gap-3"
-          >
-            <div className="flex-1 min-w-[140px]">
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                New Subject Name
-              </label>
-              <input
-                type="text"
-                required
-                value={newSubName}
-                onChange={(e) => setNewSubName(e.target.value)}
-                placeholder="e.g. Biology"
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-              />
-            </div>
-            <div className="w-28">
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                Code
-              </label>
-              <input
-                type="text"
-                required
-                value={newSubCode}
-                onChange={(e) => setNewSubCode(e.target.value)}
-                placeholder="BIO"
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm uppercase"
-              />
-            </div>
-            <button
-              type="submit"
-              className="px-4 py-2 rounded-lg bg-[#123B72] text-white text-sm font-semibold hover:bg-[#1769AA]"
-            >
-              Add Subject
-            </button>
-          </form>
-
-          <div className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-end gap-3">
-            <div className="flex-1 min-w-[150px]">
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                Filter by Subject
-              </label>
-              <select
-                value={filterSubjectId}
-                onChange={(e) => setFilterSubjectId(e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-              >
-                <option value="">All Subjects ({questions.length})</option>
-                {subjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.questionCount})
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex-1 min-w-[140px]">
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                Filter by Topic
-              </label>
-              <input
-                type="text"
-                value={filterTopic}
-                onChange={(e) => setFilterTopic(e.target.value)}
-                placeholder="Search topic..."
-                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Questions List */}
-        <div className="space-y-3">
-          {loading ? (
-            <p className="text-sm text-slate-500">Loading questions...</p>
-          ) : filteredQuestions.length === 0 ? (
-            <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-sm text-slate-500">
-              No questions found for the selected filter.
-            </div>
-          ) : (
-            filteredQuestions.map((q) => (
-              <div
-                key={q.id}
-                className="bg-white border border-slate-200 rounded-xl p-5 space-y-3"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <p className="text-xs font-semibold text-[#1769AA]">
-                      {q.subjectName} · {q.topic} ·{' '}
-                      <span className="font-mono-tabular">
-                        {q.marks} mark{q.marks > 1 ? 's' : ''}
-                      </span>
-                    </p>
-                    <p className="text-sm sm:text-base font-medium text-[#1E293B]">
-                      {q.questionText}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => openQuestionModal(q)}
-                      className="p-1.5 rounded text-[#1769AA] hover:bg-slate-100"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteQuestion(q.id)}
-                      className="p-1.5 rounded text-red-600 hover:bg-red-50"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
-                  {(['A', 'B', 'C', 'D'] as const).map((opt) => {
-                    const text =
-                      opt === 'A'
-                        ? q.optionA
-                        : opt === 'B'
-                          ? q.optionB
-                          : opt === 'C'
-                            ? q.optionC
-                            : q.optionD;
-                    const isAns = q.correctOption === opt;
-                    return (
-                      <div
-                        key={opt}
-                        className={`px-3 py-2 rounded-lg border ${
-                          isAns
-                            ? 'border-emerald-500 bg-emerald-50 text-emerald-900 font-semibold'
-                            : 'border-slate-200 bg-[#F5F8FC] text-slate-700'
-                        }`}
-                      >
-                        <strong className="font-mono-tabular mr-1.5">
-                          {opt}.
-                        </strong>
-                        {text}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* Add/Edit Question Modal */}
-        {showQuestionModal && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl max-w-xl w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-              <div className="flex items-center justify-between">
-                <h3 className="font-display text-lg font-bold text-[#123B72]">
-                  {editingQuestion ? 'Edit Question' : 'Add Multiple-Choice Question'}
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setShowQuestionModal(false)}
-                >
-                  <X className="w-5 h-5 text-slate-400" />
-                </button>
-              </div>
-              <form onSubmit={handleSaveQuestion} className="space-y-3.5">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Subject *
-                    </label>
-                    <select
-                      required
-                      value={qForm.subjectId}
-                      onChange={(e) =>
-                        setQForm({ ...qForm, subjectId: e.target.value })
-                      }
-                      className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                    >
-                      {subjects.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Topic
-                    </label>
-                    <input
-                      type="text"
-                      value={qForm.topic}
-                      onChange={(e) =>
-                        setQForm({ ...qForm, topic: e.target.value })
-                      }
-                      className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Question Text *
-                  </label>
-                  <textarea
-                    rows={3}
-                    required
-                    value={qForm.questionText}
-                    onChange={(e) =>
-                      setQForm({ ...qForm, questionText: e.target.value })
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                  />
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {(['A', 'B', 'C', 'D'] as const).map((opt) => {
-                    const field = `option${opt}` as
-                      | 'optionA'
-                      | 'optionB'
-                      | 'optionC'
-                      | 'optionD';
-                    return (
-                      <div key={opt}>
-                        <label className="block text-xs font-medium text-slate-600 mb-1">
-                          Option {opt} *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={qForm[field]}
-                          onChange={(e) =>
-                            setQForm({ ...qForm, [field]: e.target.value })
-                          }
-                          className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Correct Answer *
-                    </label>
-                    <select
-                      value={qForm.correctOption}
-                      onChange={(e) =>
-                        setQForm({ ...qForm, correctOption: e.target.value })
-                      }
-                      className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                    >
-                      <option value="A">Option A</option>
-                      <option value="B">Option B</option>
-                      <option value="C">Option C</option>
-                      <option value="D">Option D</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Marks
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      value={qForm.marks}
-                      onChange={(e) =>
-                        setQForm({ ...qForm, marks: e.target.value })
-                      }
-                      className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                    />
-                  </div>
-                </div>
-                <div className="flex justify-end gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowQuestionModal(false)}
-                    className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 rounded-lg bg-[#123B72] text-white text-sm font-semibold"
-                  >
-                    Save Question
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* Bulk Questions & Answers Upload Modal */}
-        {showQImportModal && (
-          <BulkQuestionsUploadModal
-            token={token}
-            subjects={subjects}
-            exams={exams}
-            initialSubjectId={filterSubjectId}
-            onClose={() => setShowQImportModal(false)}
-            onSuccess={(summaryMsg) => {
-              setShowQImportModal(false);
-              setMsg(summaryMsg);
-              loadAll();
-            }}
-          />
-        )}
-      </div>
+      <AdminQuestionBankSection
+        token={token}
+        subjects={subjects}
+        questions={questions}
+        exams={exams}
+        loading={loading}
+        onReload={loadAll}
+      />
     );
   }
 
@@ -1152,7 +696,7 @@ export function AdminCbtManagementSection({
 
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">
-                      Class Level
+                      Class Level / Category
                     </label>
                     <select
                       value={examForm.classLevel}
@@ -1162,11 +706,30 @@ export function AdminCbtManagementSection({
                       className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
                     >
                       <option value="ALL">All Classes</option>
-                      {availableClassLevels.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
+                      {examScopedClasses.length > 0 ? (
+                        <>
+                          <optgroup label="Selected School / Agency Classes">
+                            {examScopedClasses.map((c) => (
+                              <option key={c} value={c}>
+                                {c}
+                              </option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="Other / Standard Classes">
+                            {examOtherClassLevels.map((c) => (
+                              <option key={c} value={c}>
+                                {c}
+                              </option>
+                            ))}
+                          </optgroup>
+                        </>
+                      ) : (
+                        availableClassLevels.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))
+                      )}
                     </select>
                   </div>
 
@@ -1322,7 +885,12 @@ export function AdminCbtManagementSection({
                               <strong className="text-[#1769AA] mr-1">
                                 [{q.topic}]
                               </strong>
-                              {q.questionText}
+                              <MathText text={q.questionText} />
+                              {q.imageUrl && (
+                                <span className="ml-1.5 text-[11px] font-semibold text-emerald-700">
+                                  · Diagram attached
+                                </span>
+                              )}
                             </span>
                           </label>
                         );

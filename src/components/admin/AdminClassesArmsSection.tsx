@@ -57,6 +57,7 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
     'JSS2',
     'JSS3',
   ]);
+  const [customBulkClassesInput, setCustomBulkClassesInput] = useState('');
   const [bulkArmsInput, setBulkArmsInput] = useState(
     'A, B, C, D, E, F, G, H, I, J'
   );
@@ -155,13 +156,24 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
     setErr('');
     setMsg('');
 
+    const parsedCustomClasses = customBulkClassesInput
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+
+    const combinedClasses = Array.from(
+      new Set([...bulkClasses, ...parsedCustomClasses])
+    );
+
     const parsedArms = bulkArmsInput
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
 
-    if (bulkClasses.length === 0 || parsedArms.length === 0) {
-      setErr('Select at least one class level and enter at least one arm.');
+    if (combinedClasses.length === 0 || parsedArms.length === 0) {
+      setErr(
+        'Select or enter at least one class/category level and enter at least one arm or group.'
+      );
       return;
     }
 
@@ -173,7 +185,7 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
       },
       body: JSON.stringify({
         schoolId: bulkSchoolId ? Number(bulkSchoolId) : null,
-        classLevels: bulkClasses,
+        classLevels: combinedClasses,
         armNames: parsedArms,
       }),
     });
@@ -185,6 +197,7 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
     }
 
     setShowBulkModal(false);
+    setCustomBulkClassesInput('');
     setMsg(
       `Generated ${json.createdCount} new class & arm record(s).${
         json.skippedCount > 0 ? ` (${json.skippedCount} already existed)` : ''
@@ -244,9 +257,9 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
             Classes &amp; Arms Management
           </h2>
           <p className="text-sm text-slate-600">
-            Configure Nigerian secondary school class levels and arms (JSS1–JSS3:
-            A–J; SS1–SS3: Class 1–Class 6, Art) for student enrolment and
-            examination targeting.
+            Configure secondary school class levels (JSS1–SS3) or create custom
+            categories, quiz stages, and cohorts scoped separately to any
+            participating school or external agency.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
@@ -488,11 +501,18 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
                     onChange={(e) =>
                       setForm({ ...form, classLevel: e.target.value })
                     }
-                    placeholder="e.g. SS2"
+                    placeholder="e.g. SS2, QUIZ-SENIOR, STAGE-1"
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm uppercase"
                   />
                   <datalist id="nigerian-classes-list">
-                    {STANDARD_CLASSES.map((c) => (
+                    {[
+                      ...STANDARD_CLASSES,
+                      'QUIZ-JUNIOR',
+                      'QUIZ-SENIOR',
+                      'STAGE-1',
+                      'SEMI-FINAL',
+                      'FINAL',
+                    ].map((c) => (
                       <option key={c} value={c} />
                     ))}
                   </datalist>
@@ -500,7 +520,7 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
 
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Arm Name *
+                    Arm / Group Name *
                   </label>
                   <input
                     type="text"
@@ -510,7 +530,7 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
                     onChange={(e) =>
                       setForm({ ...form, armName: e.target.value })
                     }
-                    placeholder="e.g. A, Class 1, Art"
+                    placeholder="e.g. A, Class 1, Group A, Batch 1"
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
                   />
                   <datalist id="nigerian-arms-list">
@@ -587,7 +607,7 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
             <form onSubmit={handleBulkGenerate} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">
-                  School Scope
+                  School / Agency Scope
                 </label>
                 <select
                   value={bulkSchoolId}
@@ -597,15 +617,19 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
                   <option value="">All Registered Schools (Global)</option>
                   {schools.map((sc) => (
                     <option key={sc.id} value={sc.id}>
-                      {sc.name}
+                      {sc.name} ({sc.code})
                     </option>
                   ))}
                 </select>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Select a specific organization or quiz agency to keep its
+                  custom classes separate from secondary schools.
+                </p>
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-2">
-                  Select Class Levels *
+                  Standard Class Levels (Optional)
                 </label>
                 <div className="grid grid-cols-3 gap-2">
                   {STANDARD_CLASSES.map((cls) => {
@@ -630,14 +654,27 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
 
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">
-                  Arms (comma-separated) *
+                  Custom Class / Category / Competition Stage Names (comma-separated)
+                </label>
+                <input
+                  type="text"
+                  value={customBulkClassesInput}
+                  onChange={(e) => setCustomBulkClassesInput(e.target.value)}
+                  placeholder="e.g. QUIZ-JUNIOR, QUIZ-SENIOR, ROUND-1, FINAL"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm uppercase"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Arms / Groups / Batches (comma-separated) *
                 </label>
                 <input
                   type="text"
                   required
                   value={bulkArmsInput}
                   onChange={(e) => setBulkArmsInput(e.target.value)}
-                  placeholder="e.g. A, B, C or Class 1, Class 2, Art"
+                  placeholder="e.g. A, B, C or Group A, Group B, Batch 1"
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
                 />
                 <div className="flex flex-wrap gap-2 mt-2">
@@ -645,6 +682,7 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
                     type="button"
                     onClick={() => {
                       setBulkClasses(['JSS1', 'JSS2', 'JSS3']);
+                      setCustomBulkClassesInput('');
                       setBulkArmsInput('A, B, C, D, E, F, G, H, I, J');
                     }}
                     className="text-xs font-semibold text-[#1769AA] hover:underline"
@@ -656,6 +694,7 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
                     type="button"
                     onClick={() => {
                       setBulkClasses(['SS1', 'SS2', 'SS3']);
+                      setCustomBulkClassesInput('');
                       setBulkArmsInput(
                         'Class 1, Class 2, Class 3, Class 4, Class 5, Class 6, Art'
                       );
@@ -663,6 +702,20 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
                     className="text-xs font-semibold text-[#E83E8C] hover:underline"
                   >
                     Preset: SS1–SS3 (Class 1–6, Art)
+                  </button>
+                  <span className="text-slate-300">·</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBulkClasses([]);
+                      setCustomBulkClassesInput(
+                        'QUIZ-PRELIM, QUIZ-SEMI, QUIZ-FINAL'
+                      );
+                      setBulkArmsInput('Group A, Group B, Group C, Group D');
+                    }}
+                    className="text-xs font-semibold text-emerald-700 hover:underline"
+                  >
+                    Preset: Quiz Competition Stages
                   </button>
                 </div>
               </div>
