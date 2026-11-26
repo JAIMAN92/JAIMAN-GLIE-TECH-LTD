@@ -21,10 +21,12 @@ import {
 import {
   type AdminRequest,
   ensureQuestionColumns,
+  ensureSchoolColumns,
   logAdminActivity,
   normalizeAdminRole,
   requireAdmin,
   requireSuperAdmin,
+  sanitizeImageUrl,
   sanitizeQuestionImageUrl,
 } from '../authMiddleware.ts';
 import {
@@ -282,6 +284,7 @@ router.delete('/announcements/:id', requireSuperAdmin, async (req: AdminRequest,
 // 3. SCHOOL MANAGEMENT
 router.get('/schools', async (req: AdminRequest, res) => {
   try {
+    await ensureSchoolColumns();
     const rows = await db
       .select({
         id: schools.id,
@@ -293,6 +296,7 @@ router.get('/schools', async (req: AdminRequest, res) => {
         contactEmail: schools.contactEmail,
         contactPhone: schools.contactPhone,
         accessCode: schools.accessCode,
+        logoUrl: schools.logoUrl,
         isActive: schools.isActive,
         createdAt: schools.createdAt,
         studentCount: count(students.id),
@@ -306,6 +310,7 @@ router.get('/schools', async (req: AdminRequest, res) => {
     res.json({
       schools: rows.map((r) => ({
         ...r,
+        logoUrl: r.logoUrl || '',
         accessCode: isSuper ? r.accessCode : '',
         studentCount: Number(r.studentCount),
       })),
@@ -318,6 +323,7 @@ router.get('/schools', async (req: AdminRequest, res) => {
 
 router.post('/schools', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
+    await ensureSchoolColumns();
     const {
       name,
       code,
@@ -327,6 +333,7 @@ router.post('/schools', requireSuperAdmin, async (req: AdminRequest, res) => {
       contactEmail,
       contactPhone,
       accessCode,
+      logoUrl,
     } = req.body ?? {};
 
     if (
@@ -349,6 +356,14 @@ router.post('/schools', requireSuperAdmin, async (req: AdminRequest, res) => {
       });
     }
 
+    const sanitizedLogo = sanitizeImageUrl(logoUrl);
+    if (sanitizedLogo === null) {
+      return res.status(400).json({
+        error:
+          'School or agency logo must be a valid image upload or an http(s) / relative image URL under 1.2 MB.',
+      });
+    }
+
     const generatedAccess =
       typeof accessCode === 'string' && accessCode.trim()
         ? accessCode.trim()
@@ -365,6 +380,7 @@ router.post('/schools', requireSuperAdmin, async (req: AdminRequest, res) => {
         contactEmail: contactEmail.trim().toLowerCase(),
         contactPhone: contactPhone.trim(),
         accessCode: generatedAccess,
+        logoUrl: sanitizedLogo,
         isActive: true,
       })
       .returning();
@@ -388,6 +404,7 @@ router.post('/schools', requireSuperAdmin, async (req: AdminRequest, res) => {
 
 router.put('/schools/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
+    await ensureSchoolColumns();
     const id = Number(req.params.id);
     const {
       name,
@@ -398,8 +415,21 @@ router.put('/schools/:id', requireSuperAdmin, async (req: AdminRequest, res) => 
       contactEmail,
       contactPhone,
       accessCode,
+      logoUrl,
       isActive,
     } = req.body ?? {};
+
+    let sanitizedLogo: string | undefined;
+    if (logoUrl !== undefined) {
+      const cleaned = sanitizeImageUrl(logoUrl);
+      if (cleaned === null) {
+        return res.status(400).json({
+          error:
+            'School or agency logo must be a valid image upload or an http(s) / relative image URL under 1.2 MB.',
+        });
+      }
+      sanitizedLogo = cleaned;
+    }
 
     const [updated] = await db
       .update(schools)
@@ -420,6 +450,7 @@ router.put('/schools/:id', requireSuperAdmin, async (req: AdminRequest, res) => 
         ...(typeof accessCode === 'string' && accessCode.trim()
           ? { accessCode: accessCode.trim() }
           : {}),
+        ...(sanitizedLogo !== undefined ? { logoUrl: sanitizedLogo } : {}),
         ...(typeof isActive === 'boolean' ? { isActive } : {}),
       })
       .where(eq(schools.id, id))
@@ -533,8 +564,9 @@ router.get('/class-arms', async (req: AdminRequest, res) => {
       .where(schoolIdFilter ? eq(classArms.schoolId, schoolIdFilter) : undefined)
       .orderBy(asc(classArms.classLevel), asc(classArms.armName));
 
+    await ensureSchoolColumns();
     const allSchools = await db.select().from(schools);
-    const schoolMap = new Map(allSchools.map((s) => [s.id, s.name]));
+    const schoolMap = new Map(allSchools.map((s) => [s.id, s]));
 
     const allStudents = await db
       .select({
@@ -554,11 +586,14 @@ router.get('/class-arms', async (req: AdminRequest, res) => {
         return classMatch && armMatch && schoolMatch;
       }).length;
 
+      const matchedSchool = ca.schoolId ? schoolMap.get(ca.schoolId) : undefined;
+
       return {
         ...ca,
         schoolName: ca.schoolId
-          ? schoolMap.get(ca.schoolId) || 'Specific School'
+          ? matchedSchool?.name || 'Specific School'
           : 'All Registered Schools (Global)',
+        schoolLogoUrl: matchedSchool?.logoUrl || '',
         studentCount,
       };
     });
@@ -808,12 +843,14 @@ router.get('/students', async (req: AdminRequest, res) => {
     if (schoolIdFilter) conditions.push(eq(students.schoolId, schoolIdFilter));
     if (classLevelFilter) conditions.push(eq(students.classLevel, classLevelFilter));
 
+    await ensureSchoolColumns();
     const rows = await db
       .select({
         id: students.id,
         schoolId: students.schoolId,
         schoolName: schools.name,
         schoolCode: schools.code,
+        schoolLogoUrl: schools.logoUrl,
         examNumber: students.examNumber,
         fullName: students.fullName,
         classLevel: students.classLevel,
@@ -1124,6 +1161,182 @@ router.post('/students/import', async (req: AdminRequest, res) => {
   }
 });
 
+router.post('/students/bulk', async (req: AdminRequest, res) => {
+  try {
+    const { schoolId, items } = req.body ?? {};
+    const numericSchoolId = Number(schoolId);
+
+    if (
+      !Number.isInteger(numericSchoolId) ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      return res.status(400).json({
+        error:
+          'Target school/organization and at least one student record are required.',
+      });
+    }
+
+    if (items.length > 1000) {
+      return res.status(400).json({
+        error: 'Bulk student upload supports up to 1,000 students per batch.',
+      });
+    }
+
+    const [school] = await db
+      .select({ id: schools.id, code: schools.code, name: schools.name })
+      .from(schools)
+      .where(eq(schools.id, numericSchoolId))
+      .limit(1);
+
+    if (!school) {
+      return res.status(404).json({ error: 'Selected school was not found.' });
+    }
+
+    const prefix = buildExamNumberPrefix(school.code);
+    let nextSeq = await getNextExamNumberSequence(prefix);
+    const existingRows = await db
+      .select({ examNumber: students.examNumber })
+      .from(students);
+    const usedExamNumbers = new Set(
+      existingRows.map((r) => r.examNumber.trim().toUpperCase())
+    );
+
+    const rowsToInsert: Array<{
+      schoolId: number;
+      examNumber: string;
+      fullName: string;
+      classLevel: string;
+      arm: string;
+      passcodeHash: string;
+      isActive: boolean;
+      plainPasscode: string;
+      wasAutoGenerated: boolean;
+    }> = [];
+    const errors: string[] = [];
+
+    items.forEach((rawItem: Record<string, unknown>, idx: number) => {
+      const fullName = String(rawItem?.fullName ?? '').trim();
+      const classLevel = String(rawItem?.classLevel ?? '')
+        .trim()
+        .toUpperCase();
+      const arm = String(rawItem?.arm ?? '').trim();
+      const passcode = String(rawItem?.passcode ?? '').trim();
+      const providedExamNumber = String(rawItem?.examNumber ?? '')
+        .trim()
+        .toUpperCase();
+
+      if (!fullName || !classLevel || passcode.length < 4) {
+        errors.push(
+          `Student #${idx + 1}: missing name/class or passcode under 4 characters`
+        );
+        return;
+      }
+
+      let finalExamNumber = providedExamNumber;
+      let wasAutoGenerated = false;
+      if (!finalExamNumber) {
+        while (usedExamNumbers.has(formatExamNumber(prefix, nextSeq))) {
+          nextSeq += 1;
+        }
+        finalExamNumber = formatExamNumber(prefix, nextSeq);
+        nextSeq += 1;
+        wasAutoGenerated = true;
+      }
+
+      if (usedExamNumbers.has(finalExamNumber)) {
+        errors.push(
+          `Student #${idx + 1} (${fullName}): duplicate exam number ${finalExamNumber}`
+        );
+        return;
+      }
+
+      usedExamNumbers.add(finalExamNumber);
+      rowsToInsert.push({
+        schoolId: numericSchoolId,
+        examNumber: finalExamNumber,
+        fullName: fullName.slice(0, 160),
+        classLevel: classLevel.slice(0, 60),
+        arm: arm.slice(0, 60),
+        passcodeHash: hashPassword(passcode),
+        isActive: true,
+        plainPasscode: passcode,
+        wasAutoGenerated,
+      });
+    });
+
+    if (rowsToInsert.length === 0) {
+      return res.status(400).json({
+        error: 'No valid student records found to register.',
+        errors,
+      });
+    }
+
+    const createdStudents: Array<{
+      id: number;
+      examNumber: string;
+      fullName: string;
+      schoolName: string;
+      classLevel: string;
+      arm: string;
+      passcode: string;
+    }> = [];
+    let autoGeneratedCount = 0;
+
+    for (const row of rowsToInsert) {
+      try {
+        const [inserted] = await db
+          .insert(students)
+          .values({
+            schoolId: row.schoolId,
+            examNumber: row.examNumber,
+            fullName: row.fullName,
+            classLevel: row.classLevel,
+            arm: row.arm,
+            passcodeHash: row.passcodeHash,
+            isActive: true,
+          })
+          .returning();
+
+        if (inserted) {
+          if (row.wasAutoGenerated) autoGeneratedCount += 1;
+          createdStudents.push({
+            id: inserted.id,
+            examNumber: inserted.examNumber,
+            fullName: inserted.fullName,
+            schoolName: school.name,
+            classLevel: inserted.classLevel,
+            arm: inserted.arm,
+            passcode: row.plainPasscode,
+          });
+        }
+      } catch {
+        errors.push(
+          `Could not insert ${row.fullName} (${row.examNumber}): duplicate exam number`
+        );
+      }
+    }
+
+    await logAdminActivity({
+      adminId: req.admin!.id,
+      adminLabel: req.admin!.username,
+      action: 'BULK_UPLOAD_STUDENTS',
+      targetType: 'student',
+      targetDetails: `Registered ${createdStudents.length} student(s) in ${school.name} (${autoGeneratedCount} auto-generated exam numbers)`,
+    });
+
+    res.status(201).json({
+      imported: createdStudents.length,
+      autoGeneratedCount,
+      createdStudents,
+      errors,
+    });
+  } catch (error) {
+    console.error('Bulk upload students error:', error);
+    res.status(500).json({ error: 'Bulk student upload failed.' });
+  }
+});
+
 router.put('/students/:id', async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
@@ -1297,6 +1510,7 @@ router.get('/questions', async (req: AdminRequest, res) => {
         optionB: questions.optionB,
         optionC: questions.optionC,
         optionD: questions.optionD,
+        optionE: questions.optionE,
         correctOption: questions.correctOption,
         marks: questions.marks,
         createdAt: questions.createdAt,
@@ -1325,9 +1539,13 @@ router.post('/questions', async (req: AdminRequest, res) => {
       optionB,
       optionC,
       optionD,
+      optionE,
       correctOption,
       marks,
     } = req.body ?? {};
+
+    const normalizedCorrect = String(correctOption ?? '').toUpperCase();
+    const cleanOptionE = typeof optionE === 'string' ? optionE.trim() : '';
 
     if (
       !Number.isInteger(Number(subjectId)) ||
@@ -1341,11 +1559,18 @@ router.post('/questions', async (req: AdminRequest, res) => {
       !optionC.trim() ||
       typeof optionD !== 'string' ||
       !optionD.trim() ||
-      !['A', 'B', 'C', 'D'].includes(String(correctOption).toUpperCase())
+      !['A', 'B', 'C', 'D', 'E'].includes(normalizedCorrect)
     ) {
       return res.status(400).json({
         error:
-          'Subject, question text, all four options (A, B, C, D), and a valid correct option are required.',
+          'Subject, question text, options A–D (plus optional Option E), and a valid correct option (A–E) are required.',
+      });
+    }
+
+    if (normalizedCorrect === 'E' && !cleanOptionE) {
+      return res.status(400).json({
+        error:
+          'Option E text is required when Option E is selected as the correct answer.',
       });
     }
 
@@ -1368,7 +1593,8 @@ router.post('/questions', async (req: AdminRequest, res) => {
         optionB: optionB.trim(),
         optionC: optionC.trim(),
         optionD: optionD.trim(),
-        correctOption: String(correctOption).toUpperCase(),
+        optionE: cleanOptionE,
+        correctOption: normalizedCorrect,
         marks: Math.max(1, Number(marks) || 1),
       })
       .returning();
@@ -1398,7 +1624,7 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
     if (rows.length < 2) {
       return res.status(400).json({
         error:
-          'CSV must contain a header row (topic,questionText,optionA,optionB,optionC,optionD,correctOption,marks) and at least one question.',
+          'CSV must contain a header row (topic,questionText,optionA,optionB,optionC,optionD,optionE,correctOption,marks) and at least one question.',
       });
     }
 
@@ -1415,6 +1641,7 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
       b: header.findIndex((h) => ['optionb', 'option_b', 'b'].includes(h)),
       c: header.findIndex((h) => ['optionc', 'option_c', 'c'].includes(h)),
       d: header.findIndex((h) => ['optiond', 'option_d', 'd'].includes(h)),
+      e: header.findIndex((h) => ['optione', 'option_e', 'e'].includes(h)),
       ans: header.findIndex((h) =>
         ['correctoption', 'correct_option', 'answer', 'correct'].includes(h)
       ),
@@ -1431,7 +1658,7 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
     ) {
       return res.status(400).json({
         error:
-          'CSV header must include questionText, optionA, optionB, optionC, optionD, correctOption.',
+          'CSV header must include questionText, optionA, optionB, optionC, optionD (plus optional optionE), correctOption.',
       });
     }
 
@@ -1445,6 +1672,7 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
       const optionB = (cols[idx.b] ?? '').trim();
       const optionC = (cols[idx.c] ?? '').trim();
       const optionD = (cols[idx.d] ?? '').trim();
+      const optionE = idx.e >= 0 ? (cols[idx.e] ?? '').trim() : '';
       const correctOption = (cols[idx.ans] ?? '').trim().toUpperCase();
       const topic = idx.topic >= 0 ? (cols[idx.topic] ?? '').trim() || 'General' : 'General';
       const marks = idx.marks >= 0 ? Math.max(1, Number(cols[idx.marks]) || 1) : 1;
@@ -1457,7 +1685,8 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
         !optionB ||
         !optionC ||
         !optionD ||
-        !['A', 'B', 'C', 'D'].includes(correctOption)
+        !['A', 'B', 'C', 'D', 'E'].includes(correctOption) ||
+        (correctOption === 'E' && !optionE)
       ) {
         errors.push(`Row ${i + 1}: invalid question fields or answer key`);
         continue;
@@ -1472,6 +1701,7 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
         optionB,
         optionC,
         optionD,
+        optionE,
         correctOption,
         marks,
       });
@@ -1552,6 +1782,7 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
       optionB: string;
       optionC: string;
       optionD: string;
+      optionE: string;
       correctOption: string;
       marks: number;
     }> = [];
@@ -1563,6 +1794,7 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
       const optionB = String(rawItem?.optionB ?? '').trim();
       const optionC = String(rawItem?.optionC ?? '').trim();
       const optionD = String(rawItem?.optionD ?? '').trim();
+      const optionE = String(rawItem?.optionE ?? '').trim();
       const correctOption = String(rawItem?.correctOption ?? '')
         .trim()
         .toUpperCase();
@@ -1576,7 +1808,8 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
         !optionB ||
         !optionC ||
         !optionD ||
-        !['A', 'B', 'C', 'D'].includes(correctOption)
+        !['A', 'B', 'C', 'D', 'E'].includes(correctOption) ||
+        (correctOption === 'E' && !optionE)
       ) {
         errors.push(`Item #${index + 1}: missing required options or invalid answer key`);
         return;
@@ -1596,6 +1829,7 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
         optionB: optionB.slice(0, 1000),
         optionC: optionC.slice(0, 1000),
         optionD: optionD.slice(0, 1000),
+        optionE: optionE.slice(0, 1000),
         correctOption,
         marks,
       });
@@ -1665,6 +1899,7 @@ router.put('/questions/:id', async (req: AdminRequest, res) => {
       optionB,
       optionC,
       optionD,
+      optionE,
       correctOption,
       marks,
     } = req.body ?? {};
@@ -1679,6 +1914,34 @@ router.put('/questions/:id', async (req: AdminRequest, res) => {
         });
       }
       validatedImageUpdate = { imageUrl: cleanImageUrl };
+    }
+
+    const normalizedCorrect =
+      typeof correctOption === 'string' &&
+      ['A', 'B', 'C', 'D', 'E'].includes(correctOption.toUpperCase())
+        ? correctOption.toUpperCase()
+        : null;
+
+    if (normalizedCorrect === 'E') {
+      if (typeof optionE === 'string' && !optionE.trim()) {
+        return res.status(400).json({
+          error:
+            'Option E text is required when Option E is selected as the correct answer.',
+        });
+      }
+      if (optionE === undefined) {
+        const [existingRow] = await db
+          .select({ optionE: questions.optionE })
+          .from(questions)
+          .where(eq(questions.id, id))
+          .limit(1);
+        if (existingRow && !existingRow.optionE.trim()) {
+          return res.status(400).json({
+            error:
+              'Option E text is required when Option E is selected as the correct answer.',
+          });
+        }
+      }
     }
 
     const [updated] = await db
@@ -1696,10 +1959,8 @@ router.put('/questions/:id', async (req: AdminRequest, res) => {
         ...(typeof optionB === 'string' ? { optionB: optionB.trim() } : {}),
         ...(typeof optionC === 'string' ? { optionC: optionC.trim() } : {}),
         ...(typeof optionD === 'string' ? { optionD: optionD.trim() } : {}),
-        ...(typeof correctOption === 'string' &&
-        ['A', 'B', 'C', 'D'].includes(correctOption.toUpperCase())
-          ? { correctOption: correctOption.toUpperCase() }
-          : {}),
+        ...(typeof optionE === 'string' ? { optionE: optionE.trim() } : {}),
+        ...(normalizedCorrect ? { correctOption: normalizedCorrect } : {}),
         ...(marks !== undefined ? { marks: Math.max(1, Number(marks) || 1) } : {}),
       })
       .where(eq(questions.id, id))
@@ -1775,25 +2036,32 @@ router.get('/examinations', async (_req: AdminRequest, res) => {
             .where(inArray(examAssignments.examId, examIds))
         : [];
 
+    await ensureSchoolColumns();
     const allSchools = await db.select().from(schools);
-    const schoolMap = new Map(allSchools.map((s) => [s.id, s.name]));
+    const schoolMap = new Map(allSchools.map((s) => [s.id, s]));
 
     res.json({
-      examinations: exams.map((e) => ({
-        ...e,
-        schoolName: e.schoolId ? schoolMap.get(e.schoolId) || 'Specific School' : 'All Registered Schools',
-        questionIds: eqRows
-          .filter((q) => q.examId === e.id)
-          .sort((a, b) => a.sortOrder - b.sortOrder)
-          .map((q) => q.questionId),
-        submissionCount: attemptRows.filter(
-          (a) => a.examId === e.id && a.status === 'submitted'
-        ).length,
-        inProgressCount: attemptRows.filter(
-          (a) => a.examId === e.id && a.status === 'in_progress'
-        ).length,
-        assignments: assignRows.filter((a) => a.examId === e.id),
-      })),
+      examinations: exams.map((e) => {
+        const matchedSchool = e.schoolId ? schoolMap.get(e.schoolId) : undefined;
+        return {
+          ...e,
+          schoolName: e.schoolId
+            ? matchedSchool?.name || 'Specific School'
+            : 'All Registered Schools',
+          schoolLogoUrl: matchedSchool?.logoUrl || '',
+          questionIds: eqRows
+            .filter((q) => q.examId === e.id)
+            .sort((a, b) => a.sortOrder - b.sortOrder)
+            .map((q) => q.questionId),
+          submissionCount: attemptRows.filter(
+            (a) => a.examId === e.id && a.status === 'submitted'
+          ).length,
+          inProgressCount: attemptRows.filter(
+            (a) => a.examId === e.id && a.status === 'in_progress'
+          ).length,
+          assignments: assignRows.filter((a) => a.examId === e.id),
+        };
+      }),
     });
   } catch (error) {
     console.error('Fetch examinations error:', error);
@@ -2026,6 +2294,7 @@ router.put('/examinations/:id/assignments', requireSuperAdmin, async (req: Admin
 router.get('/examinations/:id/submissions', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
     const examId = Number(req.params.id);
+    await ensureSchoolColumns();
     const rows = await db
       .select({
         attemptId: examAttempts.id,
@@ -2034,6 +2303,7 @@ router.get('/examinations/:id/submissions', requireSuperAdmin, async (req: Admin
         classLevel: students.classLevel,
         arm: students.arm,
         schoolName: schools.name,
+        schoolLogoUrl: schools.logoUrl,
         status: examAttempts.status,
         startedAt: examAttempts.startedAt,
         submittedAt: examAttempts.submittedAt,
@@ -2088,6 +2358,7 @@ router.get('/results', requireSuperAdmin, async (req: AdminRequest, res) => {
     if (examId) conditions.push(eq(examinations.id, examId));
     if (classLevel) conditions.push(eq(students.classLevel, classLevel));
 
+    await ensureSchoolColumns();
     const rows = await db
       .select({
         attemptId: examAttempts.id,
@@ -2098,6 +2369,7 @@ router.get('/results', requireSuperAdmin, async (req: AdminRequest, res) => {
         subjectCode: subjects.code,
         schoolId: schools.id,
         schoolName: schools.name,
+        schoolLogoUrl: schools.logoUrl,
         studentId: students.id,
         examNumber: students.examNumber,
         studentName: students.fullName,

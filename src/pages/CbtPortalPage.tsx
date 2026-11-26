@@ -31,6 +31,7 @@ import {
 } from '../components/cbt/ExamCountdownTimer.tsx';
 import { ExamProgressBar } from '../components/cbt/ExamProgressBar.tsx';
 import { MathText } from '../components/MathText.tsx';
+import { SchoolNameBadge } from '../components/SchoolNameBadge.tsx';
 import {
   clearExamDraft,
   loadExamDraft,
@@ -77,6 +78,7 @@ interface ExamQuestionItem {
   optionB: string;
   optionC: string;
   optionD: string;
+  optionE?: string;
   marks: number;
 }
 
@@ -1014,11 +1016,20 @@ export function CbtPortalPage() {
                 <h1 className="font-display text-2xl font-bold text-[#123B72]">
                   {activeExam.title}
                 </h1>
-                <p className="text-sm text-slate-600">
-                  {student.fullName} · {student.examNumber} ·{' '}
-                  {student.classLevel}
-                  {student.arm ? ` ${student.arm}` : ''} · {student.schoolName}
-                </p>
+                <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600 pt-1">
+                  <span>
+                    {student.fullName} · {student.examNumber} ·{' '}
+                    {student.classLevel}
+                    {student.arm ? ` ${student.arm}` : ''} ·
+                  </span>
+                  <SchoolNameBadge
+                    name={student.schoolName}
+                    logoUrl={student.schoolLogoUrl}
+                    code={student.schoolCode}
+                    size="xs"
+                    nameClassName="text-sm font-semibold text-[#123B72]"
+                  />
+                </div>
               </div>
               <CheckCircle2 className="w-10 h-10 text-emerald-600 shrink-0" />
             </div>
@@ -1300,16 +1311,17 @@ export function CbtPortalPage() {
                 </div>
               )}
 
-              {/* 4 Answer Options */}
+              {/* Answer Options (A–E) */}
               <div className="space-y-3">
-                {(
-                  [
-                    { key: 'A', text: currentQuestion.optionA },
-                    { key: 'B', text: currentQuestion.optionB },
-                    { key: 'C', text: currentQuestion.optionC },
-                    { key: 'D', text: currentQuestion.optionD },
-                  ] as const
-                ).map((opt) => {
+                {[
+                  { key: 'A', text: currentQuestion.optionA },
+                  { key: 'B', text: currentQuestion.optionB },
+                  { key: 'C', text: currentQuestion.optionC },
+                  { key: 'D', text: currentQuestion.optionD },
+                  ...(currentQuestion.optionE && currentQuestion.optionE.trim()
+                    ? [{ key: 'E', text: currentQuestion.optionE }]
+                    : []),
+                ].map((opt) => {
                   const isSelected = answers[currentQuestion.id] === opt.key;
                   return (
                     <button
@@ -1801,10 +1813,14 @@ export function CbtPortalPage() {
 
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-10 space-y-8">
         <div className="bg-white border border-slate-200 rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <p className="text-xs font-semibold tracking-wider text-[#1769AA] uppercase">
-              {student.schoolName}
-            </p>
+          <div className="space-y-1.5">
+            <SchoolNameBadge
+              name={student.schoolName}
+              logoUrl={student.schoolLogoUrl}
+              code={student.schoolCode}
+              size="md"
+              nameClassName="text-xs sm:text-sm font-bold text-[#1769AA] tracking-wide"
+            />
             <h1 className="font-display text-2xl font-bold text-[#123B72]">
               Assigned CBT Examinations
             </h1>

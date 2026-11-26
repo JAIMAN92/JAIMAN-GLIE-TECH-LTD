@@ -6,7 +6,8 @@ export type QuestionFieldKey =
   | 'optionA'
   | 'optionB'
   | 'optionC'
-  | 'optionD';
+  | 'optionD'
+  | 'optionE';
 
 const FIELD_LABELS: Record<QuestionFieldKey, string> = {
   questionText: 'Question Text',
@@ -14,6 +15,7 @@ const FIELD_LABELS: Record<QuestionFieldKey, string> = {
   optionB: 'Option B',
   optionC: 'Option C',
   optionD: 'Option D',
+  optionE: 'Option E',
 };
 
 type FormulaCategory = 'maths' | 'calculus' | 'chemistry' | 'symbols';
@@ -307,7 +309,7 @@ export function LatexFormulaToolbar({
       {showGuide && (
         <div className="p-3 rounded-lg bg-white border border-slate-200 text-xs text-slate-600 space-y-1.5">
           <p className="font-semibold text-[#123B72]">
-            How to write equations in Questions and Options A–D:
+            How to write equations in Questions and Options A–E:
           </p>
           <p>
             Use single dollar signs for inline math:{' '}

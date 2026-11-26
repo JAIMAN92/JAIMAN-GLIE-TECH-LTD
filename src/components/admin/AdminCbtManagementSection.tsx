@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { AdminQuestionBankSection } from './AdminQuestionBankSection.tsx';
 import { MathText } from '../MathText.tsx';
+import { SchoolNameBadge } from '../SchoolNameBadge.tsx';
 import { exportResultsToPdf } from '../../lib/resultsExport.ts';
 
 interface SubjectRow {
@@ -35,6 +36,7 @@ interface QuestionRow {
   optionB: string;
   optionC: string;
   optionD: string;
+  optionE: string;
   correctOption: string;
   marks: number;
 }
@@ -47,6 +49,7 @@ interface ExamRow {
   subjectCode: string;
   schoolId: number | null;
   schoolName: string;
+  schoolLogoUrl?: string;
   classLevel: string;
   arm: string;
   durationMinutes: number;
@@ -85,6 +88,7 @@ interface ResultRow {
   subjectCode: string;
   schoolId: number;
   schoolName: string;
+  schoolLogoUrl?: string;
   examNumber: string;
   studentName: string;
   classLevel: string;
@@ -106,6 +110,7 @@ interface SubmissionMonitorRow {
   classLevel: string;
   arm: string;
   schoolName: string;
+  schoolLogoUrl?: string;
   status: string;
   startedAt: string;
   submittedAt: string | null;
@@ -148,7 +153,7 @@ export function AdminCbtManagementSection({
     startTime: '08:00',
     endTime: '18:00',
     instructions:
-      'Read each question carefully. Select the most accurate option (A, B, C, or D). Answers are saved automatically.',
+      'Read each question carefully. Select the most accurate option (A, B, C, D, or E). Answers are saved automatically.',
     isActive: true,
     resultsPublished: true,
     questionIds: [] as number[],
@@ -276,7 +281,7 @@ export function AdminCbtManagementSection({
         startTime: '08:00',
         endTime: '18:00',
         instructions:
-          'Read each question carefully. Select the most accurate option (A, B, C, or D). Answers are saved automatically.',
+          'Read each question carefully. Select the most accurate option (A, B, C, D, or E). Answers are saved automatically.',
         isActive: true,
         resultsPublished: true,
         questionIds: defaultQIds,
@@ -557,7 +562,16 @@ export function AdminCbtManagementSection({
                       {ex.subjectName}
                     </span>
                     <span className="text-slate-400">·</span>
-                    <span className="text-slate-600">{ex.schoolName}</span>
+                    {ex.schoolId ? (
+                      <SchoolNameBadge
+                        name={ex.schoolName}
+                        logoUrl={ex.schoolLogoUrl}
+                        size="xs"
+                        nameClassName="text-xs font-medium text-slate-700"
+                      />
+                    ) : (
+                      <span className="text-slate-600">{ex.schoolName}</span>
+                    )}
                     <span className="text-slate-400">·</span>
                     <span className="font-mono-tabular text-slate-600">
                       Class: {ex.classLevel}
@@ -991,8 +1005,13 @@ export function AdminCbtManagementSection({
                           </p>
                         </td>
                         <td className="px-3 py-2 text-slate-600">
-                          {s.schoolName} ({s.classLevel}
-                          {s.arm ? ` · ${s.arm}` : ''})
+                          <SchoolNameBadge
+                            name={s.schoolName}
+                            logoUrl={s.schoolLogoUrl}
+                            size="xs"
+                            subtitle={`${s.classLevel}${s.arm ? ` · ${s.arm}` : ''}`}
+                            nameClassName="text-xs font-medium text-slate-700"
+                          />
                         </td>
                         <td className="px-3 py-2 capitalize font-medium">
                           {s.status.replace('_', ' ')}
@@ -1227,8 +1246,13 @@ export function AdminCbtManagementSection({
                       </p>
                     </td>
                     <td className="px-4 py-3 text-slate-600">
-                      {r.schoolName} · {r.classLevel}
-                      {r.arm ? ` ${r.arm}` : ''}
+                      <SchoolNameBadge
+                        name={r.schoolName}
+                        logoUrl={r.schoolLogoUrl}
+                        size="xs"
+                        subtitle={`${r.classLevel}${r.arm ? ` ${r.arm}` : ''}`}
+                        nameClassName="text-sm font-medium text-slate-700"
+                      />
                     </td>
                     <td className="px-4 py-3">
                       <p className="font-medium text-[#1E293B]">

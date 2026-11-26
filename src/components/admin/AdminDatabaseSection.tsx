@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS schools (
   contact_email TEXT NOT NULL,
   contact_phone TEXT NOT NULL,
   access_code TEXT NOT NULL,
+  logo_url TEXT NOT NULL DEFAULT '',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );

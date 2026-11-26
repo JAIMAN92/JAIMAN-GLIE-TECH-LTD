@@ -39,6 +39,7 @@ A. 3
 B. 5
 C. 7
 D. 15
+E. 29
 Answer: B
 Topic: Algebra
 Marks: 2
@@ -48,6 +49,7 @@ A) 90 degrees
 B) 180 degrees
 C) 270 degrees
 D) 360 degrees
+E) 540 degrees
 Ans: B
 Topic: Geometry
 Marks: 2`;
@@ -202,9 +204,9 @@ export function BulkQuestionsUploadModal({
 
   const downloadCsvTemplate = () => {
     const sample = [
-      'topic,questionText,optionA,optionB,optionC,optionD,correctOption,marks,imageUrl',
-      'Algebra,"Solve for x in 2x + 4 = 10.",2,3,4,5,B,2,',
-      'Geometry,"What is the sum of interior angles of a triangle?",90 degrees,180 degrees,270 degrees,360 degrees,B,2,',
+      'topic,questionText,optionA,optionB,optionC,optionD,optionE,correctOption,marks,imageUrl',
+      'Algebra,"Solve for x in 2x + 4 = 10.",2,3,4,5,6,B,2,',
+      'Geometry,"What is the sum of interior angles of a triangle?",90 degrees,180 degrees,270 degrees,360 degrees,540 degrees,B,2,',
     ].join('\n');
     const blob = new Blob([sample], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -290,6 +292,7 @@ export function BulkQuestionsUploadModal({
               optionB: q.optionB,
               optionC: q.optionC,
               optionD: q.optionD,
+              optionE: q.optionE || '',
               correctOption: q.correctOption,
               marks: q.marks,
             };
@@ -523,9 +526,9 @@ export function BulkQuestionsUploadModal({
               </p>
               <p className="text-xs text-slate-500 mt-1">
                 Spreadsheets should include columns: questionText, optionA,
-                optionB, optionC, optionD, correctOption (optional: topic,
-                marks, imageUrl). You can also attach diagram image files to any
-                question in the preview below.
+                optionB, optionC, optionD, optionE (optional), correctOption
+                (optional: topic, marks, imageUrl). You can also attach diagram
+                image files to any question in the preview below.
               </p>
             </label>
           )}
@@ -534,7 +537,7 @@ export function BulkQuestionsUploadModal({
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs text-slate-600">
                 <span>
-                  Format each question with options A–D and{' '}
+                  Format each question with options A–E (A–D required, E optional) and{' '}
                   <code className="font-mono-tabular bg-slate-100 px-1 rounded">
                     Answer: B
                   </code>{' '}
@@ -585,7 +588,7 @@ export function BulkQuestionsUploadModal({
                   setCsvText(e.target.value);
                   setRemovedIds(new Set());
                 }}
-                placeholder="topic,questionText,optionA,optionB,optionC,optionD,correctOption,marks"
+                placeholder="topic,questionText,optionA,optionB,optionC,optionD,optionE,correctOption,marks"
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs font-mono-tabular leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#1769AA]"
               />
             </div>
@@ -721,33 +724,41 @@ export function BulkQuestionsUploadModal({
                           </button>
                         </div>
                       </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                        {(['A', 'B', 'C', 'D'] as const).map((opt) => {
-                          const optVal =
-                            opt === 'A'
-                              ? q.optionA
-                              : opt === 'B'
-                                ? q.optionB
-                                : opt === 'C'
-                                  ? q.optionC
-                                  : q.optionD;
-                          const isAns = q.correctOption === opt;
-                          return (
-                            <div
-                              key={opt}
-                              className={`px-2.5 py-1.5 rounded border break-words ${
-                                isAns
-                                  ? 'border-emerald-500 bg-emerald-50 text-emerald-900 font-semibold'
-                                  : 'border-slate-200 bg-[#F5F8FC] text-slate-700'
-                              }`}
-                            >
-                              <strong className="font-mono-tabular mr-1">
-                                {opt}.
-                              </strong>
-                              <MathText text={optVal} />
-                            </div>
-                          );
-                        })}
+                      <div
+                        className={`grid grid-cols-2 ${
+                          q.optionE?.trim() ? 'sm:grid-cols-5' : 'sm:grid-cols-4'
+                        } gap-2 text-xs`}
+                      >
+                        {(['A', 'B', 'C', 'D', 'E'] as const)
+                          .filter((opt) => opt !== 'E' || Boolean(q.optionE?.trim()))
+                          .map((opt) => {
+                            const optVal =
+                              opt === 'A'
+                                ? q.optionA
+                                : opt === 'B'
+                                  ? q.optionB
+                                  : opt === 'C'
+                                    ? q.optionC
+                                    : opt === 'D'
+                                      ? q.optionD
+                                      : q.optionE;
+                            const isAns = q.correctOption === opt;
+                            return (
+                              <div
+                                key={opt}
+                                className={`px-2.5 py-1.5 rounded border break-words ${
+                                  isAns
+                                    ? 'border-emerald-500 bg-emerald-50 text-emerald-900 font-semibold'
+                                    : 'border-slate-200 bg-[#F5F8FC] text-slate-700'
+                                }`}
+                              >
+                                <strong className="font-mono-tabular mr-1">
+                                  {opt}.
+                                </strong>
+                                <MathText text={optVal} />
+                              </div>
+                            );
+                          })}
                       </div>
                     </div>
                     );

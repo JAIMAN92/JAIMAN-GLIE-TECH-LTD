@@ -51,6 +51,7 @@ export function CbtInterfaceIllustration() {
               { key: 'B', label: '5', selected: true },
               { key: 'C', label: '7', selected: false },
               { key: 'D', label: '15', selected: false },
+              { key: 'E', label: '29', selected: false },
             ].map((opt) => (
               <div
                 key={opt.key}

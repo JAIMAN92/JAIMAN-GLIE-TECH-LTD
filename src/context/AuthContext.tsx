@@ -10,6 +10,7 @@ export interface StudentSessionUser {
   schoolId: number;
   schoolName: string;
   schoolCode: string;
+  schoolLogoUrl?: string;
 }
 
 interface AuthContextValue {

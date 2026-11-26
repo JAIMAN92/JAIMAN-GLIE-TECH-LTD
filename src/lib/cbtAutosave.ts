@@ -26,7 +26,7 @@ export function loadExamDraft(
       for (const [k, v] of Object.entries(parsed.answers)) {
         const qId = Number(k);
         const opt = String(v ?? '').toUpperCase();
-        if (Number.isInteger(qId) && ['A', 'B', 'C', 'D'].includes(opt)) {
+        if (Number.isInteger(qId) && ['A', 'B', 'C', 'D', 'E'].includes(opt)) {
           cleanAnswers[qId] = opt;
         }
       }

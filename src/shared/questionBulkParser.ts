@@ -1,3 +1,5 @@
+export type OptionLetter = 'A' | 'B' | 'C' | 'D' | 'E';
+
 export interface ParsedBulkQuestion {
   id: string;
   topic: string;
@@ -7,7 +9,8 @@ export interface ParsedBulkQuestion {
   optionB: string;
   optionC: string;
   optionD: string;
-  correctOption: 'A' | 'B' | 'C' | 'D';
+  optionE: string;
+  correctOption: OptionLetter;
   marks: number;
 }
 
@@ -23,28 +26,28 @@ export interface BulkParseResult {
 
 function resolveCorrectLetter(
   rawAnswer: string,
-  options: { A: string; B: string; C: string; D: string }
-): 'A' | 'B' | 'C' | 'D' | null {
+  options: { A: string; B: string; C: string; D: string; E: string }
+): OptionLetter | null {
   const cleaned = rawAnswer.trim();
   if (!cleaned) return null;
 
-  // Matches "A", "b", "Option B", "Ans: C", "(D)", "B.", "B)"
+  // Matches "A", "b", "Option E", "Ans: C", "(D)", "E.", "B)"
   const letterMatch = cleaned.match(
-    /^(?:option|opt|answer|ans|key|correct)?\s*[:.\-(]*\s*([A-Da-d])\s*[).\]]*$/i
+    /^(?:option|opt|answer|ans|key|correct)?\s*[:.\-(]*\s*([A-Ea-e])\s*[).\]]*$/i
   );
   if (letterMatch) {
-    return letterMatch[1].toUpperCase() as 'A' | 'B' | 'C' | 'D';
+    return letterMatch[1].toUpperCase() as OptionLetter;
   }
 
-  // Matches leading "B. Some text" or "B) Some text"
-  const prefixedMatch = cleaned.match(/^([A-Da-d])\s*[).:\-]\s+/);
+  // Matches leading "B. Some text" or "E) Some text"
+  const prefixedMatch = cleaned.match(/^([A-Ea-e])\s*[).:\-]\s+/);
   if (prefixedMatch) {
-    return prefixedMatch[1].toUpperCase() as 'A' | 'B' | 'C' | 'D';
+    return prefixedMatch[1].toUpperCase() as OptionLetter;
   }
 
-  // Matches numeric 1..4
-  if (['1', '2', '3', '4'].includes(cleaned)) {
-    return (['A', 'B', 'C', 'D'] as const)[Number(cleaned) - 1];
+  // Matches numeric 1..5
+  if (['1', '2', '3', '4', '5'].includes(cleaned)) {
+    return (['A', 'B', 'C', 'D', 'E'] as const)[Number(cleaned) - 1];
   }
 
   // Matches exact option text (case-insensitive)
@@ -53,6 +56,7 @@ function resolveCorrectLetter(
   if (options.B.trim().toLowerCase() === lower) return 'B';
   if (options.C.trim().toLowerCase() === lower) return 'C';
   if (options.D.trim().toLowerCase() === lower) return 'D';
+  if (options.E && options.E.trim().toLowerCase() === lower) return 'E';
 
   return null;
 }
@@ -152,7 +156,7 @@ export function parseSpreadsheetRows(
         {
           itemLabel: 'File / Sheet',
           reason:
-            'Include a header row (questionText, optionA, optionB, optionC, optionD, correctOption) and at least one question row.',
+            'Include a header row (questionText, optionA, optionB, optionC, optionD, optionE, correctOption) and at least one question row.',
         },
       ],
     };
@@ -188,6 +192,7 @@ export function parseSpreadsheetRows(
     b: findCol(['optionb', 'b', 'optb', 'choiceb', 'answerb']),
     c: findCol(['optionc', 'c', 'optc', 'choicec', 'answerc']),
     d: findCol(['optiond', 'd', 'optd', 'choiced', 'answerd']),
+    e: findCol(['optione', 'e', 'opte', 'choicee', 'answere']),
     ans: findCol([
       'correctoption',
       'correctanswer',
@@ -214,7 +219,7 @@ export function parseSpreadsheetRows(
         {
           itemLabel: 'Header Row',
           reason:
-            'Missing required column headers. Include: questionText, optionA, optionB, optionC, optionD, and correctOption (or Answer).',
+            'Missing required column headers. Include: questionText, optionA, optionB, optionC, optionD (plus optional optionE), and correctOption (or Answer).',
         },
       ],
     };
@@ -232,6 +237,7 @@ export function parseSpreadsheetRows(
     const optionB = (cols[idx.b] ?? '').trim();
     const optionC = (cols[idx.c] ?? '').trim();
     const optionD = (cols[idx.d] ?? '').trim();
+    const optionE = idx.e >= 0 ? (cols[idx.e] ?? '').trim() : '';
     const rawAns = (cols[idx.ans] ?? '').trim();
     const topic =
       idx.topic >= 0 ? (cols[idx.topic] ?? '').trim() || defaultTopic : defaultTopic;
@@ -243,6 +249,7 @@ export function parseSpreadsheetRows(
       B: optionB,
       C: optionC,
       D: optionD,
+      E: optionE,
     });
 
     if (!questionText) {
@@ -252,14 +259,21 @@ export function parseSpreadsheetRows(
     if (!optionA || !optionB || !optionC || !optionD) {
       errors.push({
         itemLabel: `Row ${i + 1}`,
-        reason: 'All four options (A, B, C, and D) must be filled.',
+        reason: 'Options A, B, C, and D must be filled (Option E is optional).',
       });
       continue;
     }
     if (!correctOption) {
       errors.push({
         itemLabel: `Row ${i + 1}`,
-        reason: `Invalid answer key "${rawAns || '(empty)'}". Use A, B, C, D or exact option text.`,
+        reason: `Invalid answer key "${rawAns || '(empty)'}". Use A, B, C, D, E or exact option text.`,
+      });
+      continue;
+    }
+    if (correctOption === 'E' && !optionE) {
+      errors.push({
+        itemLabel: `Row ${i + 1}`,
+        reason: 'Correct option is set to E, but optionE is empty.',
       });
       continue;
     }
@@ -273,6 +287,7 @@ export function parseSpreadsheetRows(
       optionB,
       optionC,
       optionD,
+      optionE,
       correctOption,
       marks: parsedMarks,
     });
@@ -305,7 +320,7 @@ export function parseQaTextBlocks(
   let sawAnswerInCurrent = false;
 
   const isOptionLine = (line: string) =>
-    /^(?:\*?\s*)?(?:\(?([A-Da-d])\)|([A-Da-d])[.)\]:-])\s+/.test(line.trim());
+    /^(?:\*?\s*)?(?:\(?([A-Ea-e])\)|([A-Ea-e])[.)\]:-])\s+/.test(line.trim());
 
   const isAnswerLine = (line: string) =>
     /^(?:correct\s*answer|correct\s*option|answer|ans|key|correct)\s*[:=\-.]?\s*/i.test(
@@ -355,14 +370,15 @@ export function parseQaTextBlocks(
   blocks.forEach((blockLines, idx) => {
     const label = `Question #${idx + 1}`;
     const qParts: string[] = [];
-    const options: { A: string; B: string; C: string; D: string } = {
+    const options: { A: string; B: string; C: string; D: string; E: string } = {
       A: '',
       B: '',
       C: '',
       D: '',
+      E: '',
     };
     let rawAnswer = '';
-    let starMarkedCorrect: 'A' | 'B' | 'C' | 'D' | null = null;
+    let starMarkedCorrect: OptionLetter | null = null;
     let topic = defaultTopic;
     let marks = defaultMarks;
     let imageUrl = '';
@@ -398,16 +414,12 @@ export function parseQaTextBlocks(
       }
 
       const optMatch = line.match(
-        /^(\*?)\s*(?:\(([A-Da-d])\)|([A-Da-d])[.)\]:-])\s*(.+)$/
+        /^(\*?)\s*(?:\(([A-Ea-e])\)|([A-Ea-e])[.)\]:-])\s*(.+)$/
       );
       if (optMatch) {
         inOptionsSection = true;
         const hasLeadingStar = Boolean(optMatch[1]);
-        const letter = (optMatch[2] || optMatch[3]).toUpperCase() as
-          | 'A'
-          | 'B'
-          | 'C'
-          | 'D';
+        const letter = (optMatch[2] || optMatch[3]).toUpperCase() as OptionLetter;
         let optText = optMatch[4].trim();
         if (/\*$|\[correct\]|\(correct\)/i.test(optText) || hasLeadingStar) {
           starMarkedCorrect = letter;
@@ -452,6 +464,13 @@ export function parseQaTextBlocks(
       });
       return;
     }
+    if (correctOption === 'E' && !options.E) {
+      errors.push({
+        itemLabel: label,
+        reason: 'Answer is marked E, but Option E text is missing.',
+      });
+      return;
+    }
 
     questions.push({
       id: `txt-${idx}-${Math.random().toString(36).slice(2, 7)}`,
@@ -462,6 +481,7 @@ export function parseQaTextBlocks(
       optionB: options.B,
       optionC: options.C,
       optionD: options.D,
+      optionE: options.E,
       correctOption,
       marks,
     });
@@ -520,12 +540,14 @@ export function parseJsonQuestions(
             B: String(item.options[1] ?? '').trim(),
             C: String(item.options[2] ?? '').trim(),
             D: String(item.options[3] ?? '').trim(),
+            E: String(item.options[4] ?? '').trim(),
           }
         : {
             A: String(item.optionA ?? item.option_a ?? item.a ?? '').trim(),
             B: String(item.optionB ?? item.option_b ?? item.b ?? '').trim(),
             C: String(item.optionC ?? item.option_c ?? item.c ?? '').trim(),
             D: String(item.optionD ?? item.option_d ?? item.d ?? '').trim(),
+            E: String(item.optionE ?? item.option_e ?? item.e ?? '').trim(),
           };
 
       const rawAns = String(
@@ -554,6 +576,13 @@ export function parseJsonQuestions(
         });
         return;
       }
+      if (correctOption === 'E' && !optsObj.E) {
+        errors.push({
+          itemLabel: label,
+          reason: 'correctOption is E, but optionE is empty.',
+        });
+        return;
+      }
 
       questions.push({
         id: `json-${idx}-${Math.random().toString(36).slice(2, 7)}`,
@@ -564,6 +593,7 @@ export function parseJsonQuestions(
         optionB: optsObj.B,
         optionC: optsObj.C,
         optionD: optsObj.D,
+        optionE: optsObj.E,
         correctOption,
         marks,
       });

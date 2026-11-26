@@ -88,6 +88,7 @@ export const schools = pgTable('schools', {
   contactEmail: text('contact_email').notNull(),
   contactPhone: text('contact_phone').notNull(),
   accessCode: text('access_code').notNull(),
+  logoUrl: text('logo_url').notNull().default(''),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
@@ -154,7 +155,8 @@ export const questions = pgTable('questions', {
   optionB: text('option_b').notNull(),
   optionC: text('option_c').notNull(),
   optionD: text('option_d').notNull(),
-  correctOption: text('correct_option').notNull(), // 'A' | 'B' | 'C' | 'D'
+  optionE: text('option_e').notNull().default(''),
+  correctOption: text('correct_option').notNull(), // 'A' | 'B' | 'C' | 'D' | 'E'
   marks: integer('marks').notNull().default(1),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });

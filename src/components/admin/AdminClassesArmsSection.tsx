@@ -9,16 +9,20 @@ import {
   X,
 } from 'lucide-react';
 
+import { SchoolNameBadge } from '../SchoolNameBadge.tsx';
+
 interface SchoolOption {
   id: number;
   name: string;
   code: string;
+  logoUrl?: string;
 }
 
 interface ClassArmRow {
   id: number;
   schoolId: number | null;
   schoolName: string;
+  schoolLogoUrl?: string;
   classLevel: string;
   armName: string;
   displayName: string;
@@ -410,7 +414,16 @@ export function AdminClassesArmsSection({ token }: { token: string }) {
                       {item.displayName}
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-600">
-                      {item.schoolName}
+                      {item.schoolId ? (
+                        <SchoolNameBadge
+                          name={item.schoolName}
+                          logoUrl={item.schoolLogoUrl}
+                          size="xs"
+                          nameClassName="text-xs font-medium text-slate-700"
+                        />
+                      ) : (
+                        item.schoolName
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right font-mono-tabular font-semibold text-[#123B72]">
                       {item.studentCount}

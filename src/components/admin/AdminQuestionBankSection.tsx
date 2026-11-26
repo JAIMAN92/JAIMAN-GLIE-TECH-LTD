@@ -45,6 +45,7 @@ export interface QuestionBankItem {
   optionB: string;
   optionC: string;
   optionD: string;
+  optionE: string;
   correctOption: string;
   marks: number;
 }
@@ -98,7 +99,8 @@ export function AdminQuestionBankSection({
     optionB: '',
     optionC: '',
     optionD: '',
-    correctOption: 'A' as 'A' | 'B' | 'C' | 'D',
+    optionE: '',
+    correctOption: 'A' as 'A' | 'B' | 'C' | 'D' | 'E',
     marks: '1',
   });
 
@@ -112,6 +114,7 @@ export function AdminQuestionBankSection({
     optionB: null,
     optionC: null,
     optionD: null,
+    optionE: null,
   });
 
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
@@ -173,6 +176,7 @@ export function AdminQuestionBankSection({
       ...validateLatexInText(qForm.optionB),
       ...validateLatexInText(qForm.optionC),
       ...validateLatexInText(qForm.optionD),
+      ...validateLatexInText(qForm.optionE),
     ];
   }, [
     qForm.questionText,
@@ -180,6 +184,7 @@ export function AdminQuestionBankSection({
     qForm.optionB,
     qForm.optionC,
     qForm.optionD,
+    qForm.optionE,
   ]);
 
   const effectiveSubjectId =
@@ -232,7 +237,7 @@ export function AdminQuestionBankSection({
         return false;
       }
       if (query) {
-        const haystack = `${q.questionText} ${q.topic} ${q.subjectName} ${q.optionA} ${q.optionB} ${q.optionC} ${q.optionD}`.toLowerCase();
+        const haystack = `${q.questionText} ${q.topic} ${q.subjectName} ${q.optionA} ${q.optionB} ${q.optionC} ${q.optionD} ${q.optionE || ''}`.toLowerCase();
         if (!haystack.includes(query)) return false;
       }
       return true;
@@ -313,10 +318,12 @@ export function AdminQuestionBankSection({
         optionB: q.optionB,
         optionC: q.optionC,
         optionD: q.optionD,
+        optionE: q.optionE || '',
         correctOption:
           q.correctOption === 'B' ||
           q.correctOption === 'C' ||
-          q.correctOption === 'D'
+          q.correctOption === 'D' ||
+          q.correctOption === 'E'
             ? q.correctOption
             : 'A',
         marks: String(q.marks || 1),
@@ -332,6 +339,7 @@ export function AdminQuestionBankSection({
         optionB: '',
         optionC: '',
         optionD: '',
+        optionE: '',
         correctOption: 'A',
         marks: '1',
       });
@@ -355,7 +363,15 @@ export function AdminQuestionBankSection({
       !qForm.optionC.trim() ||
       !qForm.optionD.trim()
     ) {
-      setErr('Enter the question text and all four options (A, B, C, and D).');
+      setErr(
+        'Enter the question text and options A, B, C, and D (plus Option E when used).'
+      );
+      return;
+    }
+    if (qForm.correctOption === 'E' && !qForm.optionE.trim()) {
+      setErr(
+        'Please enter text for Option E before marking it as the correct answer.'
+      );
       return;
     }
 
@@ -388,6 +404,7 @@ export function AdminQuestionBankSection({
           optionB: qForm.optionB.trim(),
           optionC: qForm.optionC.trim(),
           optionD: qForm.optionD.trim(),
+          optionE: qForm.optionE.trim(),
           correctOption: qForm.correctOption,
           marks: Math.max(1, Number(qForm.marks) || 1),
         }),
@@ -412,6 +429,7 @@ export function AdminQuestionBankSection({
           optionB: '',
           optionC: '',
           optionD: '',
+          optionE: '',
           correctOption: 'A',
         }));
         setMsg(
@@ -462,7 +480,7 @@ export function AdminQuestionBankSection({
           </h2>
           <p className="text-sm text-slate-600">
             Organize examination questions by subject and topic, build items
-            manually with A–D options, or bulk-upload Q&amp;A sets.
+            manually with A–E options, or bulk-upload Q&amp;A sets.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -824,33 +842,41 @@ export function AdminQuestionBankSection({
                       )}
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
-                    {(['A', 'B', 'C', 'D'] as const).map((opt) => {
-                      const text =
-                        opt === 'A'
-                          ? q.optionA
-                          : opt === 'B'
-                            ? q.optionB
-                            : opt === 'C'
-                              ? q.optionC
-                              : q.optionD;
-                      const isAns = q.correctOption === opt;
-                      return (
-                        <div
-                          key={opt}
-                          className={`px-3 py-2 rounded-lg border ${
-                            isAns
-                              ? 'border-emerald-500 bg-emerald-50 text-emerald-900 font-semibold'
-                              : 'border-slate-200 bg-[#F5F8FC] text-slate-700'
-                          }`}
-                        >
-                          <strong className="font-mono-tabular mr-1.5">
-                            {opt}.
-                          </strong>
-                          <MathText text={text} />
-                        </div>
-                      );
-                    })}
+                  <div
+                    className={`grid grid-cols-1 sm:grid-cols-2 ${
+                      q.optionE?.trim() ? 'lg:grid-cols-5' : 'lg:grid-cols-4'
+                    } gap-2 text-xs`}
+                  >
+                    {(['A', 'B', 'C', 'D', 'E'] as const)
+                      .filter((opt) => opt !== 'E' || Boolean(q.optionE?.trim()))
+                      .map((opt) => {
+                        const text =
+                          opt === 'A'
+                            ? q.optionA
+                            : opt === 'B'
+                              ? q.optionB
+                              : opt === 'C'
+                                ? q.optionC
+                                : opt === 'D'
+                                  ? q.optionD
+                                  : q.optionE;
+                        const isAns = q.correctOption === opt;
+                        return (
+                          <div
+                            key={opt}
+                            className={`px-3 py-2 rounded-lg border ${
+                              isAns
+                                ? 'border-emerald-500 bg-emerald-50 text-emerald-900 font-semibold'
+                                : 'border-slate-200 bg-[#F5F8FC] text-slate-700'
+                            }`}
+                          >
+                            <strong className="font-mono-tabular mr-1.5">
+                              {opt}.
+                            </strong>
+                            <MathText text={text} />
+                          </div>
+                        );
+                      })}
                   </div>
                 </div>
               ))
@@ -871,8 +897,8 @@ export function AdminQuestionBankSection({
                     : 'Add Question Manually'}
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Enter the question stem, four answer options (A–D), and mark
-                  the single correct option.
+                  Enter the question stem, answer options (A–E), and mark the
+                  single correct option.
                 </p>
               </div>
               {editingQuestion && (
@@ -1054,7 +1080,7 @@ export function AdminQuestionBankSection({
               </div>
 
               <div className="grid grid-cols-1 gap-2.5">
-                {(['A', 'B', 'C', 'D'] as const).map((opt) => {
+                {(['A', 'B', 'C', 'D', 'E'] as const).map((opt) => {
                   const field = `option${opt}` as QuestionFieldKey;
                   const isCorrect = qForm.correctOption === opt;
                   return (
@@ -1091,7 +1117,7 @@ export function AdminQuestionBankSection({
                           fieldRefs.current[field] = el;
                         }}
                         type="text"
-                        required
+                        required={opt !== 'E'}
                         value={qForm[field]}
                         onFocus={() => setActiveField(field)}
                         onChange={(e) =>
@@ -1176,7 +1202,7 @@ export function AdminQuestionBankSection({
                 </div>
               )}
               <div className="space-y-2 pt-1">
-                {(['A', 'B', 'C', 'D'] as const).map((opt) => {
+                {(['A', 'B', 'C', 'D', 'E'] as const).map((opt) => {
                   const field = `option${opt}` as QuestionFieldKey;
                   const isAns = qForm.correctOption === opt;
                   return (

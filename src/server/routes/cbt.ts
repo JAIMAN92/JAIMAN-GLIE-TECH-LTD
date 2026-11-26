@@ -17,6 +17,7 @@ import {
   checkLoginLockout,
   clearLoginFailures,
   ensureQuestionColumns,
+  ensureSchoolColumns,
   recordFailedLogin,
   requireStudent,
   type StudentRequest,
@@ -52,6 +53,7 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    await ensureSchoolColumns();
     const rows = await db
       .select({
         student: students,
@@ -102,6 +104,7 @@ router.post('/login', async (req, res) => {
         schoolId: school.id,
         schoolName: school.name,
         schoolCode: school.code,
+        schoolLogoUrl: school.logoUrl || '',
       },
     });
   } catch (error) {
@@ -320,6 +323,7 @@ router.post(
           optionB: questions.optionB,
           optionC: questions.optionC,
           optionD: questions.optionD,
+          optionE: questions.optionE,
           marks: questions.marks,
         })
         .from(examQuestions)
@@ -380,7 +384,7 @@ router.post(
       if (
         !Number.isInteger(attemptId) ||
         !Number.isInteger(Number(questionId)) ||
-        !['A', 'B', 'C', 'D'].includes(String(selectedOption))
+        !['A', 'B', 'C', 'D', 'E'].includes(String(selectedOption))
       ) {
         return res.status(400).json({ error: 'Invalid answer payload.' });
       }
@@ -502,7 +506,7 @@ router.post(
         if (
           Number.isInteger(questionId) &&
           allowedQuestionIds.has(questionId) &&
-          ['A', 'B', 'C', 'D'].includes(selectedOption)
+          ['A', 'B', 'C', 'D', 'E'].includes(selectedOption)
         ) {
           entriesToSave.push({
             attemptId,

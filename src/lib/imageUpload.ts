@@ -17,6 +17,10 @@ export function isValidQuestionImageUrl(raw: string): boolean {
   return false;
 }
 
+export function isValidImageUrl(raw: string): boolean {
+  return isValidQuestionImageUrl(raw);
+}
+
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -43,7 +47,11 @@ function loadImageElement(src: string): Promise<HTMLImageElement> {
   });
 }
 
-export async function prepareQuestionImageFile(file: File): Promise<string> {
+async function prepareResizedImageFile(
+  file: File,
+  maxDimensionPx: number,
+  label: string
+): Promise<string> {
   if (!file.type.startsWith('image/')) {
     throw new Error(
       'Please choose an image file (PNG, JPG, WebP, GIF, or SVG).'
@@ -58,7 +66,7 @@ export async function prepareQuestionImageFile(file: File): Promise<string> {
     const rawUrl = await readFileAsDataUrl(file);
     if (rawUrl.length > MAX_DATA_URL_LENGTH) {
       throw new Error(
-        'This SVG/GIF diagram is too large. Please use a smaller file under 850 KB.'
+        `This SVG/GIF ${label} is too large. Please use a smaller file under 850 KB.`
       );
     }
     return rawUrl;
@@ -69,7 +77,7 @@ export async function prepareQuestionImageFile(file: File): Promise<string> {
     const img = await loadImageElement(objectUrl);
     const scale = Math.min(
       1,
-      MAX_DIMENSION_PX / Math.max(img.naturalWidth || 1, img.naturalHeight || 1)
+      maxDimensionPx / Math.max(img.naturalWidth || 1, img.naturalHeight || 1)
     );
     const width = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
     const height = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
@@ -84,7 +92,7 @@ export async function prepareQuestionImageFile(file: File): Promise<string> {
 
     ctx.drawImage(img, 0, 0, width, height);
 
-    let dataUrl = canvas.toDataURL('image/webp', 0.88);
+    let dataUrl = canvas.toDataURL('image/webp', 0.9);
     if (!dataUrl.startsWith('data:image/webp')) {
       dataUrl = canvas.toDataURL('image/png');
     }
@@ -96,7 +104,7 @@ export async function prepareQuestionImageFile(file: File): Promise<string> {
     }
     if (dataUrl.length > MAX_DATA_URL_LENGTH) {
       throw new Error(
-        'Diagram remains too large after compression. Please crop or resize it below 1 MB.'
+        `The ${label} remains too large after compression. Please use a smaller image.`
       );
     }
 
@@ -104,4 +112,12 @@ export async function prepareQuestionImageFile(file: File): Promise<string> {
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
+}
+
+export async function prepareQuestionImageFile(file: File): Promise<string> {
+  return prepareResizedImageFile(file, MAX_DIMENSION_PX, 'diagram');
+}
+
+export async function prepareSchoolLogoFile(file: File): Promise<string> {
+  return prepareResizedImageFile(file, 512, 'logo');
 }

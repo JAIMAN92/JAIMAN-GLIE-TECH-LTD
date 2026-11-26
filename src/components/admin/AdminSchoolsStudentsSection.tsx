@@ -1,14 +1,18 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   CheckCircle2,
-  Download,
   Edit3,
-  FileSpreadsheet,
+  ImagePlus,
   Plus,
-  Search,
   Trash2,
   X,
 } from 'lucide-react';
+import {
+  isValidImageUrl,
+  prepareSchoolLogoFile,
+} from '../../lib/imageUpload.ts';
+import { SchoolNameBadge } from '../SchoolNameBadge.tsx';
+import { AdminStudentRegistrationSection } from './AdminStudentRegistrationSection.tsx';
 
 interface SchoolRow {
   id: number;
@@ -20,29 +24,9 @@ interface SchoolRow {
   contactEmail: string;
   contactPhone: string;
   accessCode: string;
+  logoUrl: string;
   isActive: boolean;
   studentCount: number;
-}
-
-interface StudentRow {
-  id: number;
-  schoolId: number;
-  schoolName: string;
-  schoolCode: string;
-  examNumber: string;
-  fullName: string;
-  classLevel: string;
-  arm: string;
-  isActive: boolean;
-}
-
-interface ClassArmOption {
-  id: number;
-  schoolId: number | null;
-  classLevel: string;
-  armName: string;
-  displayName: string;
-  isActive: boolean;
 }
 
 interface SchoolExamRecord {
@@ -66,9 +50,14 @@ export function AdminSchoolsStudentsSection({
   token: string;
   mode: 'schools' | 'students';
 }) {
+  if (mode === 'students') {
+    return <AdminStudentRegistrationSection token={token} />;
+  }
+  return <AdminSchoolsSectionContent token={token} />;
+}
+
+function AdminSchoolsSectionContent({ token }: { token: string }) {
   const [schools, setSchools] = useState<SchoolRow[]>([]);
-  const [students, setStudents] = useState<StudentRow[]>([]);
-  const [classArms, setClassArms] = useState<ClassArmOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -76,6 +65,7 @@ export function AdminSchoolsStudentsSection({
   // School Form Modal
   const [showSchoolModal, setShowSchoolModal] = useState(false);
   const [editingSchool, setEditingSchool] = useState<SchoolRow | null>(null);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
   const [schoolForm, setSchoolForm] = useState({
     name: '',
     code: '',
@@ -85,62 +75,25 @@ export function AdminSchoolsStudentsSection({
     contactEmail: '',
     contactPhone: '',
     accessCode: '',
+    logoUrl: '',
   });
 
   // School Records Modal
   const [recordsSchool, setRecordsSchool] = useState<SchoolRow | null>(null);
   const [schoolRecords, setSchoolRecords] = useState<SchoolExamRecord[]>([]);
 
-  // Student Filters & Modal
-  const [filterSchoolId, setFilterSchoolId] = useState('');
-  const [filterClassLevel, setFilterClassLevel] = useState('');
-  const [filterArm, setFilterArm] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showStudentModal, setShowStudentModal] = useState(false);
-  const [editingStudent, setEditingStudent] = useState<StudentRow | null>(null);
-  const [autoGenerateExamNumber, setAutoGenerateExamNumber] = useState(true);
-  const [studentForm, setStudentForm] = useState({
-    schoolId: '',
-    examNumber: '',
-    fullName: '',
-    classLevel: 'SS1',
-    arm: 'Class 1',
-    passcode: '',
-  });
-
-  // CSV Import Modal
-  const [showImportModal, setShowImportModal] = useState(false);
-  const [importSchoolId, setImportSchoolId] = useState('');
-  const [csvText, setCsvText] = useState('');
-
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [scRes, stRes, caRes] = await Promise.all([
-        fetch('/api/admin/schools', {
-          headers: { Authorization: `Bearer ${token}` },
-        }),
-        fetch('/api/admin/students', {
-          headers: { Authorization: `Bearer ${token}` },
-        }),
-        fetch('/api/admin/class-arms', {
-          headers: { Authorization: `Bearer ${token}` },
-        }),
-      ]);
+      const scRes = await fetch('/api/admin/schools', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       if (scRes.ok) {
         const scJson = await scRes.json();
         setSchools(scJson.schools || []);
       }
-      if (stRes.ok) {
-        const stJson = await stRes.json();
-        setStudents(stJson.students || []);
-      }
-      if (caRes.ok) {
-        const caJson = await caRes.json();
-        setClassArms(caJson.classArms || []);
-      }
     } catch {
-      setErr('Unable to load school and student records.');
+      setErr('Unable to load school records.');
     } finally {
       setLoading(false);
     }
@@ -164,6 +117,7 @@ export function AdminSchoolsStudentsSection({
         contactEmail: school.contactEmail,
         contactPhone: school.contactPhone,
         accessCode: school.accessCode,
+        logoUrl: school.logoUrl || '',
       });
     } else {
       setEditingSchool(null);
@@ -176,15 +130,46 @@ export function AdminSchoolsStudentsSection({
         contactEmail: '',
         contactPhone: '',
         accessCode: '',
+        logoUrl: '',
       });
     }
     setShowSchoolModal(true);
+  };
+
+  const handleLogoFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setErr('');
+    setUploadingLogo(true);
+    try {
+      const dataUrl = await prepareSchoolLogoFile(file);
+      setSchoolForm((prev) => ({ ...prev, logoUrl: dataUrl }));
+    } catch (error) {
+      setErr(
+        error instanceof Error
+          ? error.message
+          : 'Unable to process selected logo image.'
+      );
+    } finally {
+      setUploadingLogo(false);
+    }
   };
 
   const handleSaveSchool = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr('');
     setMsg('');
+
+    if (schoolForm.logoUrl && !isValidImageUrl(schoolForm.logoUrl)) {
+      setErr(
+        'Logo URL must be a valid image upload or an http(s) / relative image link.'
+      );
+      return;
+    }
+
     const url = editingSchool
       ? `/api/admin/schools/${editingSchool.id}`
       : '/api/admin/schools';
@@ -200,14 +185,14 @@ export function AdminSchoolsStudentsSection({
     });
     const json = await res.json();
     if (!res.ok) {
-      setErr(json.error || 'Unable to save school.');
+      setErr(json.error || 'Unable to save school or agency.');
       return;
     }
     setShowSchoolModal(false);
     setMsg(
       editingSchool
-        ? 'School details updated.'
-        : 'School registered successfully.'
+        ? 'School / agency details updated.'
+        : 'School / agency registered successfully.'
     );
     loadData();
   };
@@ -240,233 +225,8 @@ export function AdminSchoolsStudentsSection({
     }
   };
 
-  const getNextExamNumberPreview = (schoolIdStr: string) => {
-    const selectedSchool = schools.find((sc) => String(sc.id) === schoolIdStr);
-    const cleanCode = (selectedSchool?.code || 'JGT')
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '')
-      .slice(0, 8);
-    const prefix = `${cleanCode || 'JGT'}-${new Date().getFullYear()}-`;
-    let maxSeq = 0;
-    for (const st of students) {
-      const upper = st.examNumber.trim().toUpperCase();
-      if (upper.startsWith(prefix)) {
-        const suffix = upper.slice(prefix.length);
-        if (/^\d+$/.test(suffix)) {
-          const parsed = Number.parseInt(suffix, 10);
-          if (parsed > maxSeq) maxSeq = parsed;
-        }
-      }
-    }
-    return `${prefix}${String(maxSeq + 1).padStart(3, '0')}`;
-  };
-
-  // Student Handlers
-  const openStudentModal = (student?: StudentRow) => {
-    setErr('');
-    if (student) {
-      setEditingStudent(student);
-      setAutoGenerateExamNumber(false);
-      setStudentForm({
-        schoolId: String(student.schoolId),
-        examNumber: student.examNumber,
-        fullName: student.fullName,
-        classLevel: student.classLevel,
-        arm: student.arm || '',
-        passcode: '',
-      });
-    } else {
-      setEditingStudent(null);
-      setAutoGenerateExamNumber(true);
-      const defaultSchoolId = schools[0] ? String(schools[0].id) : '';
-      const scopedArm = classArms.find(
-        (c) => c.isActive && String(c.schoolId ?? '') === defaultSchoolId
-      );
-      setStudentForm({
-        schoolId: defaultSchoolId,
-        examNumber: '',
-        fullName: '',
-        classLevel: scopedArm ? scopedArm.classLevel : 'SS1',
-        arm: scopedArm ? scopedArm.armName : 'A',
-        passcode: '',
-      });
-    }
-    setShowStudentModal(true);
-  };
-
-  const handleSaveStudent = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr('');
-    setMsg('');
-    const url = editingStudent
-      ? `/api/admin/students/${editingStudent.id}`
-      : '/api/admin/students';
-    const method = editingStudent ? 'PUT' : 'POST';
-
-    const payload =
-      !editingStudent && autoGenerateExamNumber
-        ? { ...studentForm, examNumber: '' }
-        : studentForm;
-
-    const res = await fetch(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      setErr(json.error || 'Unable to save student.');
-      return;
-    }
-    setShowStudentModal(false);
-    setMsg(
-      editingStudent
-        ? `Student record updated (${json.student?.examNumber || studentForm.examNumber}).`
-        : `Student registered successfully. Assigned Exam Number: ${json.student?.examNumber || ''}`
-    );
-    loadData();
-  };
-
-  const toggleStudentActive = async (student: StudentRow) => {
-    await fetch(`/api/admin/students/${student.id}/toggle`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    loadData();
-  };
-
-  const deleteStudent = async (student: StudentRow) => {
-    await fetch(`/api/admin/students/${student.id}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    setMsg(`Removed student: ${student.fullName}`);
-    loadData();
-  };
-
-  const handleImportCsv = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr('');
-    setMsg('');
-    const res = await fetch('/api/admin/students/import', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        schoolId: Number(importSchoolId),
-        csvText,
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      setErr(json.error || 'CSV import failed.');
-      return;
-    }
-    setShowImportModal(false);
-    setCsvText('');
-    setMsg(
-      `Imported ${json.imported} student(s)${
-        json.autoGeneratedCount
-          ? ` with ${json.autoGeneratedCount} auto-generated exam number(s)`
-          : ''
-      }.${json.errors?.length ? ` (${json.errors.length} skipped)` : ''}`
-    );
-    loadData();
-  };
-
-  const downloadStudentTemplate = () => {
-    const sample =
-      'fullName,classLevel,arm,passcode\nAdebayo Chinedu Musa,SS3,Science,pass1234\nOkafor Zainab Tolu,SS2,Art,pass5678\n';
-    const blob = new Blob([sample], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'student_import_template.csv';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const availableClassLevels = Array.from(
-    new Set([
-      'JSS1',
-      'JSS2',
-      'JSS3',
-      'SS1',
-      'SS2',
-      'SS3',
-      ...classArms.filter((c) => c.isActive).map((c) => c.classLevel),
-      ...students.map((s) => s.classLevel),
-    ])
-  );
-
-  const selectedSchoolCustomClasses = Array.from(
-    new Set(
-      classArms
-        .filter(
-          (c) =>
-            c.isActive &&
-            c.schoolId !== null &&
-            String(c.schoolId) === studentForm.schoolId
-        )
-        .map((c) => c.classLevel)
-    )
-  );
-
-  const globalOrOtherClassLevels = availableClassLevels.filter(
-    (c) => !selectedSchoolCustomClasses.includes(c)
-  );
-
-  const availableArmNames = Array.from(
-    new Set(
-      classArms
-        .filter((c) => c.isActive)
-        .map((c) => c.armName)
-        .concat(students.map((s) => s.arm).filter(Boolean))
-    )
-  );
-
-  const formArmOptions = Array.from(
-    new Set(
-      classArms
-        .filter(
-          (c) =>
-            c.isActive &&
-            c.classLevel.toUpperCase() === studentForm.classLevel.toUpperCase() &&
-            (!studentForm.schoolId ||
-              c.schoolId === null ||
-              String(c.schoolId) === studentForm.schoolId)
-        )
-        .map((c) => c.armName)
-    )
-  );
-
-  const filteredStudents = students.filter((s) => {
-    if (filterSchoolId && String(s.schoolId) !== filterSchoolId) return false;
-    if (filterClassLevel && s.classLevel.toUpperCase() !== filterClassLevel)
-      return false;
-    if (filterArm && s.arm.trim().toUpperCase() !== filterArm.toUpperCase())
-      return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      return (
-        s.fullName.toLowerCase().includes(q) ||
-        s.examNumber.toLowerCase().includes(q) ||
-        s.classLevel.toLowerCase().includes(q) ||
-        (s.arm || '').toLowerCase().includes(q)
-      );
-    }
-    return true;
-  });
-
-  if (mode === 'schools') {
-    return (
-      <div className="space-y-6">
+  return (
+    <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 className="font-display text-2xl font-bold text-[#123B72]">
@@ -522,7 +282,9 @@ export function AdminSchoolsStudentsSection({
               <table className="w-full text-left text-sm">
                 <thead className="bg-[#F5F8FC] text-xs text-slate-500 border-b border-slate-200">
                   <tr>
-                    <th className="px-4 py-3 font-semibold">School & Code</th>
+                    <th className="px-4 py-3 font-semibold">
+                      School / Agency &amp; Code
+                    </th>
                     <th className="px-4 py-3 font-semibold">Location</th>
                     <th className="px-4 py-3 font-semibold">Contact Officer</th>
                     <th className="px-4 py-3 font-semibold">Access Credential</th>
@@ -535,10 +297,13 @@ export function AdminSchoolsStudentsSection({
                   {schools.map((sc) => (
                     <tr key={sc.id} className="hover:bg-slate-50">
                       <td className="px-4 py-3">
-                        <p className="font-semibold text-[#123B72]">{sc.name}</p>
-                        <p className="font-mono-tabular text-xs text-slate-500">
-                          {sc.code}
-                        </p>
+                        <SchoolNameBadge
+                          name={sc.name}
+                          logoUrl={sc.logoUrl}
+                          code={sc.code}
+                          subtitle={sc.code}
+                          size="md"
+                        />
                       </td>
                       <td className="px-4 py-3 text-slate-600">
                         {sc.lga ? `${sc.lga}, ` : ''}
@@ -608,7 +373,9 @@ export function AdminSchoolsStudentsSection({
             <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between">
                 <h3 className="font-display text-lg font-bold text-[#123B72]">
-                  {editingSchool ? 'Edit School' : 'Register New School'}
+                  {editingSchool
+                    ? 'Edit School / Agency'
+                    : 'Register New School / Agency'}
                 </h3>
                 <button
                   type="button"
@@ -617,10 +384,15 @@ export function AdminSchoolsStudentsSection({
                   <X className="w-5 h-5 text-slate-400" />
                 </button>
               </div>
+              {err && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 text-xs">
+                  {err}
+                </div>
+              )}
               <form onSubmit={handleSaveSchool} className="space-y-3.5">
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">
-                    School Name *
+                    School / Agency Name *
                   </label>
                   <input
                     type="text"
@@ -629,8 +401,67 @@ export function AdminSchoolsStudentsSection({
                     onChange={(e) =>
                       setSchoolForm({ ...schoolForm, name: e.target.value })
                     }
+                    placeholder="e.g. Kings College Lagos or National Quiz Board"
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
                   />
+                </div>
+                <div className="p-3.5 rounded-xl bg-[#F5F8FC] border border-slate-200 space-y-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="block text-xs font-semibold text-[#123B72]">
+                      School / Agency Logo (Optional)
+                    </label>
+                    {schoolForm.logoUrl && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSchoolForm({ ...schoolForm, logoUrl: '' })
+                        }
+                        className="text-xs font-medium text-red-600 hover:underline"
+                      >
+                        Remove Logo
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <SchoolNameBadge
+                      name={schoolForm.name.trim() || 'School / Agency'}
+                      logoUrl={schoolForm.logoUrl}
+                      code={schoolForm.code}
+                      size="lg"
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-[#123B72] hover:bg-slate-50 cursor-pointer">
+                      <ImagePlus className="w-3.5 h-3.5 text-[#1769AA]" />
+                      {uploadingLogo ? 'Processing...' : 'Upload Logo File'}
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                        onChange={handleLogoFileChange}
+                        className="sr-only"
+                      />
+                    </label>
+                    <input
+                      type="text"
+                      value={
+                        schoolForm.logoUrl.startsWith('data:')
+                          ? ''
+                          : schoolForm.logoUrl
+                      }
+                      onChange={(e) =>
+                        setSchoolForm({
+                          ...schoolForm,
+                          logoUrl: e.target.value,
+                        })
+                      }
+                      placeholder={
+                        schoolForm.logoUrl.startsWith('data:')
+                          ? 'Uploaded logo attached (paste URL to replace)'
+                          : 'Or paste https://... logo image URL'
+                      }
+                      className="flex-1 min-w-[180px] px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs"
+                    />
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -773,15 +604,15 @@ export function AdminSchoolsStudentsSection({
         {recordsSchool && (
           <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
             <div className="bg-white rounded-2xl max-w-3xl w-full p-6 space-y-4 max-h-[85vh] overflow-y-auto">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="font-display text-lg font-bold text-[#123B72]">
-                    {recordsSchool.name} — Examination Records
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Code: {recordsSchool.code}
-                  </p>
-                </div>
+              <div className="flex items-center justify-between gap-4">
+                <SchoolNameBadge
+                  name={`${recordsSchool.name} — Examination Records`}
+                  logoUrl={recordsSchool.logoUrl}
+                  code={recordsSchool.code}
+                  subtitle={`Code: ${recordsSchool.code}`}
+                  size="md"
+                  nameClassName="font-display text-lg font-bold text-[#123B72]"
+                />
                 <button type="button" onClick={() => setRecordsSchool(null)}>
                   <X className="w-5 h-5 text-slate-400" />
                 </button>
@@ -832,475 +663,5 @@ export function AdminSchoolsStudentsSection({
           </div>
         )}
       </div>
-    );
-  }
-
-  // STUDENT MANAGEMENT VIEW
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="font-display text-2xl font-bold text-[#123B72]">
-            Student Management
-          </h2>
-          <p className="text-sm text-slate-600">
-            Register students, assign schools and classes, import CSV records,
-            and manage CBT credentials.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2.5">
-          <button
-            type="button"
-            disabled={schools.length === 0}
-            onClick={() => {
-              setImportSchoolId(schools[0] ? String(schools[0].id) : '');
-              setShowImportModal(true);
-            }}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#123B72] text-[#123B72] text-sm font-semibold hover:bg-[#123B72] hover:text-white disabled:opacity-40"
-          >
-            <FileSpreadsheet className="w-4 h-4" />
-            Import CSV
-          </button>
-          <button
-            type="button"
-            disabled={schools.length === 0}
-            onClick={() => openStudentModal()}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold hover:bg-[#d1327c] disabled:opacity-40"
-          >
-            <Plus className="w-4 h-4" />
-            Register Student
-          </button>
-        </div>
-      </div>
-
-      {schools.length === 0 && (
-        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-sm">
-          Please register at least one school under School Management before
-          adding students.
-        </div>
-      )}
-
-      {msg && (
-        <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4" />
-          <span>{msg}</span>
-        </div>
-      )}
-      {err && (
-        <div className="p-3.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm">
-          {err}
-        </div>
-      )}
-
-      {/* Filter Bar */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by exam number, name, class, or arm..."
-            className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-300 text-sm"
-          />
-        </div>
-        <select
-          value={filterSchoolId}
-          onChange={(e) => setFilterSchoolId(e.target.value)}
-          className="px-3 py-2 rounded-lg border border-slate-300 text-sm"
-        >
-          <option value="">All Schools</option>
-          {schools.map((sc) => (
-            <option key={sc.id} value={sc.id}>
-              {sc.name}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filterClassLevel}
-          onChange={(e) => setFilterClassLevel(e.target.value)}
-          className="px-3 py-2 rounded-lg border border-slate-300 text-sm"
-        >
-          <option value="">All Classes</option>
-          {availableClassLevels.map((cls) => (
-            <option key={cls} value={cls}>
-              {cls}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filterArm}
-          onChange={(e) => setFilterArm(e.target.value)}
-          className="px-3 py-2 rounded-lg border border-slate-300 text-sm"
-        >
-          <option value="">All Arms</option>
-          {availableArmNames.map((arm) => (
-            <option key={arm} value={arm}>
-              {arm}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Students Table */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        {loading ? (
-          <p className="p-6 text-sm text-slate-500">Loading students...</p>
-        ) : filteredStudents.length === 0 ? (
-          <p className="p-8 text-center text-sm text-slate-500">
-            No students found matching your criteria.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-[#F5F8FC] text-xs text-slate-500 border-b border-slate-200">
-                <tr>
-                  <th className="px-4 py-3 font-semibold">Exam Number</th>
-                  <th className="px-4 py-3 font-semibold">Full Name</th>
-                  <th className="px-4 py-3 font-semibold">School</th>
-                  <th className="px-4 py-3 font-semibold">Class &amp; Arm</th>
-                  <th className="px-4 py-3 font-semibold">Status</th>
-                  <th className="px-4 py-3 font-semibold text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {filteredStudents.map((st) => (
-                  <tr key={st.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 font-mono-tabular font-semibold text-[#1769AA]">
-                      {st.examNumber}
-                    </td>
-                    <td className="px-4 py-3 font-medium text-[#123B72]">
-                      {st.fullName}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">{st.schoolName}</td>
-                    <td className="px-4 py-3 font-mono-tabular text-xs font-semibold text-[#1E293B]">
-                      {st.classLevel}
-                      {st.arm ? ` · ${st.arm}` : ''}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        type="button"
-                        onClick={() => toggleStudentActive(st)}
-                        className={`text-xs font-semibold ${
-                          st.isActive ? 'text-emerald-700' : 'text-red-600'
-                        }`}
-                      >
-                        {st.isActive ? 'Active' : 'Deactivated'}
-                      </button>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="inline-flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openStudentModal(st)}
-                          className="p-1.5 rounded text-[#1769AA] hover:bg-slate-100"
-                          title="Edit student / reset password"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteStudent(st)}
-                          className="p-1.5 rounded text-red-600 hover:bg-red-50"
-                          title="Delete student"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Add/Edit Student Modal */}
-      {showStudentModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-display text-lg font-bold text-[#123B72]">
-                {editingStudent ? 'Edit Student' : 'Register Student'}
-              </h3>
-              <button type="button" onClick={() => setShowStudentModal(false)}>
-                <X className="w-5 h-5 text-slate-400" />
-              </button>
-            </div>
-            <form onSubmit={handleSaveStudent} className="space-y-3.5">
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">
-                  School *
-                </label>
-                <select
-                  required
-                  value={studentForm.schoolId}
-                  onChange={(e) =>
-                    setStudentForm({ ...studentForm, schoolId: e.target.value })
-                  }
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                >
-                  {schools.map((sc) => (
-                    <option key={sc.id} value={sc.id}>
-                      {sc.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-medium text-slate-600">
-                    Examination Number {!editingStudent && autoGenerateExamNumber ? '(Auto-Generated)' : '*'}
-                  </label>
-                  {!editingStudent && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setAutoGenerateExamNumber((prev) => !prev)
-                      }
-                      className="text-[11px] font-semibold text-[#1769AA] hover:underline"
-                    >
-                      {autoGenerateExamNumber
-                        ? 'Enter manually instead'
-                        : 'Use auto-generated number'}
-                    </button>
-                  )}
-                </div>
-
-                {!editingStudent && autoGenerateExamNumber ? (
-                  <div className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-[#F5F8FC] flex items-center justify-between gap-2">
-                    <span className="text-sm font-mono-tabular font-semibold text-[#123B72]">
-                      {getNextExamNumberPreview(studentForm.schoolId)}
-                    </span>
-                    <span className="text-[11px] font-medium text-slate-500">
-                      Assigned automatically on save
-                    </span>
-                  </div>
-                ) : (
-                  <input
-                    type="text"
-                    required
-                    value={studentForm.examNumber}
-                    onChange={(e) =>
-                      setStudentForm({
-                        ...studentForm,
-                        examNumber: e.target.value,
-                      })
-                    }
-                    placeholder="e.g. JGT-2026-001"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm font-mono-tabular uppercase"
-                  />
-                )}
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">
-                  Full Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={studentForm.fullName}
-                  onChange={(e) =>
-                    setStudentForm({ ...studentForm, fullName: e.target.value })
-                  }
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Class Level / Category *
-                  </label>
-                  <select
-                    value={studentForm.classLevel}
-                    onChange={(e) =>
-                      setStudentForm({
-                        ...studentForm,
-                        classLevel: e.target.value,
-                      })
-                    }
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                  >
-                    {selectedSchoolCustomClasses.length > 0 ? (
-                      <>
-                        <optgroup label="Selected School / Agency Classes">
-                          {selectedSchoolCustomClasses.map((c) => (
-                            <option key={c} value={c}>
-                              {c}
-                            </option>
-                          ))}
-                        </optgroup>
-                        <optgroup label="Other / Standard Classes">
-                          {globalOrOtherClassLevels.map((c) => (
-                            <option key={c} value={c}>
-                              {c}
-                            </option>
-                          ))}
-                        </optgroup>
-                      </>
-                    ) : (
-                      availableClassLevels.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">
-                    Arm (e.g. A, Class 1, Art)
-                  </label>
-                  <input
-                    type="text"
-                    list="student-arm-options"
-                    value={studentForm.arm}
-                    onChange={(e) =>
-                      setStudentForm({
-                        ...studentForm,
-                        arm: e.target.value,
-                      })
-                    }
-                    placeholder="e.g. A, Class 1, Art"
-                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                  />
-                  <datalist id="student-arm-options">
-                    {(formArmOptions.length > 0
-                      ? formArmOptions
-                      : availableArmNames
-                    ).map((a) => (
-                      <option key={a} value={a} />
-                    ))}
-                  </datalist>
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">
-                  {editingStudent
-                    ? 'New Access Password (optional)'
-                    : 'Access Password (min 4 chars) *'}
-                </label>
-                <input
-                  type="text"
-                  required={!editingStudent}
-                  value={studentForm.passcode}
-                  onChange={(e) =>
-                    setStudentForm({
-                      ...studentForm,
-                      passcode: e.target.value,
-                    })
-                  }
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowStudentModal(false)}
-                  className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-lg bg-[#123B72] text-white text-sm font-semibold hover:bg-[#1769AA]"
-                >
-                  Save Student
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* CSV Import Modal */}
-      {showImportModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-display text-lg font-bold text-[#123B72]">
-                Import Student Records (CSV)
-              </h3>
-              <button type="button" onClick={() => setShowImportModal(false)}>
-                <X className="w-5 h-5 text-slate-400" />
-              </button>
-            </div>
-            <div className="flex items-center justify-between gap-2 text-xs text-slate-600 bg-[#F5F8FC] p-3 rounded-lg border border-slate-200">
-              <span>
-                Columns: fullName, classLevel, arm, passcode (examNumber is
-                optional &mdash; auto-generated if omitted)
-              </span>
-              <button
-                type="button"
-                onClick={downloadStudentTemplate}
-                className="inline-flex items-center gap-1 font-semibold text-[#1769AA] hover:underline shrink-0"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Template
-              </button>
-            </div>
-            <form onSubmit={handleImportCsv} className="space-y-3.5">
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">
-                  Target School *
-                </label>
-                <select
-                  required
-                  value={importSchoolId}
-                  onChange={(e) => setImportSchoolId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
-                >
-                  {schools.map((sc) => (
-                    <option key={sc.id} value={sc.id}>
-                      {sc.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">
-                  Upload .csv File or Paste CSV Content *
-                </label>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) {
-                      f.text().then(setCsvText);
-                    }
-                  }}
-                  className="block w-full text-xs text-slate-600 mb-2"
-                />
-                <textarea
-                  rows={6}
-                  required
-                  value={csvText}
-                  onChange={(e) => setCsvText(e.target.value)}
-                  placeholder="fullName,classLevel,arm,passcode&#10;Chinedu Okafor,SS3,Science,pass1234&#10;Zainab Musa,SS2,Art,pass5678"
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs font-mono-tabular"
-                />
-              </div>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowImportModal(false)}
-                  className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-lg bg-[#E83E8C] text-white text-sm font-semibold"
-                >
-                  Import Students
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
   );
 }

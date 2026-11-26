@@ -54,18 +54,26 @@ export async function ensureQuestionColumns(): Promise<void> {
     questionColumnsReadyPromise = (async () => {
       try {
         const check = await db.execute(sql`
-          SELECT 1 FROM information_schema.columns
+          SELECT column_name FROM information_schema.columns
           WHERE table_schema = 'public'
             AND table_name = 'questions'
-            AND column_name = 'image_url'
-          LIMIT 1
+            AND column_name IN ('image_url', 'option_e')
         `);
-        if (check.rows && check.rows.length > 0) {
-          return;
-        }
-        await db.execute(
-          sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT ''`
+        const existing = new Set(
+          (check.rows ?? []).map((r) =>
+            String((r as { column_name?: string }).column_name)
+          )
         );
+        if (!existing.has('image_url')) {
+          await db.execute(
+            sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT ''`
+          );
+        }
+        if (!existing.has('option_e')) {
+          await db.execute(
+            sql`ALTER TABLE questions ADD COLUMN IF NOT EXISTS option_e TEXT NOT NULL DEFAULT ''`
+          );
+        }
       } catch (err) {
         questionColumnsReadyPromise = null;
         console.warn('Question column migration check:', err);
@@ -73,6 +81,37 @@ export async function ensureQuestionColumns(): Promise<void> {
     })();
   }
   return questionColumnsReadyPromise;
+}
+
+let schoolColumnsReadyPromise: Promise<void> | null = null;
+
+export async function ensureSchoolColumns(): Promise<void> {
+  if (!schoolColumnsReadyPromise) {
+    schoolColumnsReadyPromise = (async () => {
+      try {
+        const check = await db.execute(sql`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'schools'
+            AND column_name = 'logo_url'
+        `);
+        const existing = new Set(
+          (check.rows ?? []).map((r) =>
+            String((r as { column_name?: string }).column_name)
+          )
+        );
+        if (!existing.has('logo_url')) {
+          await db.execute(
+            sql`ALTER TABLE schools ADD COLUMN IF NOT EXISTS logo_url TEXT NOT NULL DEFAULT ''`
+          );
+        }
+      } catch (err) {
+        schoolColumnsReadyPromise = null;
+        console.warn('School column migration check:', err);
+      }
+    })();
+  }
+  return schoolColumnsReadyPromise;
 }
 
 export function sanitizeQuestionImageUrl(raw: unknown): string | null {
@@ -91,6 +130,10 @@ export function sanitizeQuestionImageUrl(raw: unknown): string | null {
     return trimmed;
   }
   return null;
+}
+
+export function sanitizeImageUrl(raw: unknown): string | null {
+  return sanitizeQuestionImageUrl(raw);
 }
 
 export function normalizeAdminRole(raw?: string | null): AdminRole {
@@ -115,6 +158,7 @@ export interface StudentRequest extends Request {
     id: number;
     schoolId: number;
     schoolName: string;
+    schoolLogoUrl: string;
     examNumber: string;
     fullName: string;
     classLevel: string;
@@ -351,12 +395,14 @@ export const requireStudent = async (
     const tokenHash = hashSessionToken(rawToken);
     const now = new Date();
 
+    await ensureSchoolColumns();
     const rows = await db
       .select({
         sessionId: studentSessions.id,
         studentId: students.id,
         schoolId: students.schoolId,
         schoolName: schools.name,
+        schoolLogoUrl: schools.logoUrl,
         examNumber: students.examNumber,
         fullName: students.fullName,
         classLevel: students.classLevel,
@@ -394,6 +440,7 @@ export const requireStudent = async (
       id: row.studentId,
       schoolId: row.schoolId,
       schoolName: row.schoolName,
+      schoolLogoUrl: row.schoolLogoUrl || '',
       examNumber: row.examNumber,
       fullName: row.fullName,
       classLevel: row.classLevel,
