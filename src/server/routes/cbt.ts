@@ -1,31 +1,32 @@
 import { Router } from 'express';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '../../db/index.ts';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { db, withDbRetry } from '../../db/index.ts';
 import {
-  examAssignments,
   examAttempts,
-  examQuestions,
   examinations,
-  questions,
   schools,
   studentAnswers,
   studentSessions,
   students,
-  subjects,
 } from '../../db/schema.ts';
 import {
   checkLoginLockout,
   clearLoginFailures,
-  ensureQuestionColumns,
   ensureSchoolColumns,
+  invalidateStudentSessionByTokenHash,
   recordFailedLogin,
   requireStudent,
   type StudentRequest,
 } from '../authMiddleware.ts';
 import {
+  getCachedExamCatalog,
+  getCachedExamScoringQuestions,
+  getCachedSanitizedExamQuestions,
+} from '../cbtCache.ts';
+import {
   generateSessionToken,
   hashSessionToken,
-  verifyPassword,
+  verifyPasswordAsync,
 } from '../crypto.ts';
 
 const router = Router();
@@ -54,19 +55,21 @@ router.post('/login', async (req, res) => {
     }
 
     await ensureSchoolColumns();
-    const rows = await db
-      .select({
-        student: students,
-        school: schools,
-      })
-      .from(students)
-      .innerJoin(schools, eq(students.schoolId, schools.id))
-      .where(eq(students.examNumber, cleanExamNo))
-      .limit(1);
+    const rows = await withDbRetry(() =>
+      db
+        .select({
+          student: students,
+          school: schools,
+        })
+        .from(students)
+        .innerJoin(schools, eq(students.schoolId, schools.id))
+        .where(eq(students.examNumber, cleanExamNo))
+        .limit(1)
+    );
 
     if (
       rows.length === 0 ||
-      !verifyPassword(passcode.trim(), rows[0].student.passcodeHash)
+      !(await verifyPasswordAsync(passcode.trim(), rows[0].student.passcodeHash))
     ) {
       await recordFailedLogin(rateKey);
       return res.status(401).json({
@@ -87,11 +90,13 @@ router.post('/login', async (req, res) => {
     const tokenHash = hashSessionToken(rawToken);
     const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000);
 
-    await db.insert(studentSessions).values({
-      studentId: student.id,
-      tokenHash,
-      expiresAt,
-    });
+    await withDbRetry(() =>
+      db.insert(studentSessions).values({
+        studentId: student.id,
+        tokenHash,
+        expiresAt,
+      })
+    );
 
     res.json({
       token: rawToken,
@@ -117,10 +122,21 @@ router.post('/login', async (req, res) => {
 
 router.post('/logout', requireStudent, async (req: StudentRequest, res) => {
   try {
-    await db
-      .update(studentSessions)
-      .set({ revokedAt: new Date() })
-      .where(eq(studentSessions.id, req.student!.sessionId));
+    const authHeader = req.headers.authorization;
+    const rawToken =
+      authHeader && authHeader.startsWith('Bearer ')
+        ? authHeader.slice('Bearer '.length).trim()
+        : '';
+    if (rawToken) {
+      invalidateStudentSessionByTokenHash(hashSessionToken(rawToken));
+    }
+
+    await withDbRetry(() =>
+      db
+        .update(studentSessions)
+        .set({ revokedAt: new Date() })
+        .where(eq(studentSessions.id, req.student!.sessionId))
+    );
     res.json({ success: true });
   } catch (error) {
     console.error('Student logout error:', error);
@@ -128,44 +144,41 @@ router.post('/logout', requireStudent, async (req: StudentRequest, res) => {
   }
 });
 
-async function getEligibleExamsForStudent(student: NonNullable<StudentRequest['student']>) {
-  const activeExams = await db
-    .select({
-      exam: examinations,
-      subjectName: subjects.name,
-      subjectCode: subjects.code,
-    })
-    .from(examinations)
-    .innerJoin(subjects, eq(examinations.subjectId, subjects.id))
-    .where(eq(examinations.isActive, true));
+function shuffleQuestionsForAttempt<T>(items: T[], seedInput: number): T[] {
+  const result = [...items];
+  let state = (seedInput >>> 0) || 1;
+  const nextRandom = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(nextRandom() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
 
-  const examIds = activeExams.map((e) => e.exam.id);
-  const assignments =
-    examIds.length > 0
-      ? await db
+async function getEligibleExamsForStudent(
+  student: NonNullable<StudentRequest['student']>
+) {
+  const [{ activeExams, assignmentsByExamId, questionCountByExamId }, attempts] =
+    await Promise.all([
+      getCachedExamCatalog(),
+      withDbRetry(() =>
+        db
           .select()
-          .from(examAssignments)
-          .where(inArray(examAssignments.examId, examIds))
-      : [];
-
-  const qCounts =
-    examIds.length > 0
-      ? await db
-          .select()
-          .from(examQuestions)
-          .where(inArray(examQuestions.examId, examIds))
-      : [];
-
-  const attempts = await db
-    .select()
-    .from(examAttempts)
-    .where(eq(examAttempts.studentId, student.id));
+          .from(examAttempts)
+          .where(eq(examAttempts.studentId, student.id))
+      ),
+    ]);
 
   const attemptMap = new Map(attempts.map((a) => [a.examId, a]));
 
   const eligible = activeExams.filter(({ exam }) => {
     const studentArm = (student.arm || '').trim().toUpperCase();
-    const examAssigns = assignments.filter((a) => a.examId === exam.id);
+    const examAssigns = assignmentsByExamId.get(exam.id) ?? [];
     if (examAssigns.length > 0) {
       return examAssigns.some((a) => {
         if (a.studentId && a.studentId === student.id) return true;
@@ -194,7 +207,7 @@ async function getEligibleExamsForStudent(student: NonNullable<StudentRequest['s
   });
 
   return eligible.map(({ exam, subjectName, subjectCode }) => {
-    const questionCount = qCounts.filter((q) => q.examId === exam.id).length;
+    const questionCount = questionCountByExamId.get(exam.id) ?? 0;
     const attempt = attemptMap.get(exam.id);
     return {
       id: exam.id,
@@ -210,6 +223,7 @@ async function getEligibleExamsForStudent(student: NonNullable<StudentRequest['s
       instructions: exam.instructions,
       questionCount,
       resultsPublished: exam.resultsPublished,
+      shuffleQuestions: exam.shuffleQuestions,
       attempt: attempt
         ? {
             id: attempt.id,
@@ -272,16 +286,18 @@ router.post(
         });
       }
 
-      const [existingAttempt] = await db
-        .select()
-        .from(examAttempts)
-        .where(
-          and(
-            eq(examAttempts.examId, examId),
-            eq(examAttempts.studentId, req.student!.id)
+      const [existingAttempt] = await withDbRetry(() =>
+        db
+          .select()
+          .from(examAttempts)
+          .where(
+            and(
+              eq(examAttempts.examId, examId),
+              eq(examAttempts.studentId, req.student!.id)
+            )
           )
-        )
-        .limit(1);
+          .limit(1)
+      );
 
       if (existingAttempt?.status === 'submitted') {
         return res.status(409).json({
@@ -296,48 +312,75 @@ router.post(
         const expiresAt = new Date(
           now.getTime() + targetExam.durationMinutes * 60 * 1000
         );
-        const [inserted] = await db
-          .insert(examAttempts)
-          .values({
-            examId,
-            studentId: req.student!.id,
-            status: 'in_progress',
-            startedAt: now,
-            expiresAt,
-          })
-          .returning();
-        attempt = inserted;
+        const insertedRows = await withDbRetry(() =>
+          db
+            .insert(examAttempts)
+            .values({
+              examId,
+              studentId: req.student!.id,
+              status: 'in_progress',
+              startedAt: now,
+              expiresAt,
+            })
+            .onConflictDoNothing({
+              target: [examAttempts.examId, examAttempts.studentId],
+            })
+            .returning()
+        );
+        attempt = insertedRows[0];
+
+        if (!attempt) {
+          const [refetched] = await withDbRetry(() =>
+            db
+              .select()
+              .from(examAttempts)
+              .where(
+                and(
+                  eq(examAttempts.examId, examId),
+                  eq(examAttempts.studentId, req.student!.id)
+                )
+              )
+              .limit(1)
+          );
+          attempt = refetched;
+        }
       }
 
-      await ensureQuestionColumns();
+      if (!attempt) {
+        return res
+          .status(500)
+          .json({ error: 'Unable to initialize examination attempt.' });
+      }
 
-      // Fetch questions WITHOUT leaking correctOption!
-      const examQRows = await db
-        .select({
-          sortOrder: examQuestions.sortOrder,
-          id: questions.id,
-          topic: questions.topic,
-          questionText: questions.questionText,
-          imageUrl: questions.imageUrl,
-          optionA: questions.optionA,
-          optionB: questions.optionB,
-          optionC: questions.optionC,
-          optionD: questions.optionD,
-          optionE: questions.optionE,
-          marks: questions.marks,
-        })
-        .from(examQuestions)
-        .innerJoin(questions, eq(examQuestions.questionId, questions.id))
-        .where(eq(examQuestions.examId, examId))
-        .orderBy(asc(examQuestions.sortOrder), asc(examQuestions.id));
+      if (attempt.status === 'submitted') {
+        return res.status(409).json({
+          error:
+            'This examination has already been submitted and is locked against changes.',
+        });
+      }
 
-      const savedAnswers = await db
-        .select({
-          questionId: studentAnswers.questionId,
-          selectedOption: studentAnswers.selectedOption,
-        })
-        .from(studentAnswers)
-        .where(eq(studentAnswers.attemptId, attempt.id));
+      const [{ questions: examQRows }, savedAnswers] = await Promise.all([
+        getCachedSanitizedExamQuestions(examId),
+        withDbRetry(() =>
+          db
+            .select({
+              questionId: studentAnswers.questionId,
+              selectedOption: studentAnswers.selectedOption,
+            })
+            .from(studentAnswers)
+            .where(eq(studentAnswers.attemptId, attempt.id))
+        ),
+      ]);
+
+      const orderedQuestions = targetExam.shuffleQuestions
+        ? shuffleQuestionsForAttempt(
+            examQRows,
+            attempt.id * 2654435761 + examId * 31 + req.student!.id * 17
+          ).map((q, idx) => ({
+            ...q,
+            sortOrder: idx + 1,
+          }))
+        : examQRows;
 
       const answersMap: Record<number, string> = {};
       for (const ans of savedAnswers) {
@@ -363,7 +406,7 @@ router.post(
           maxSecurityViolations: 3,
         },
         exam: targetExam,
-        questions: examQRows,
+        questions: orderedQuestions,
         savedAnswers: answersMap,
       });
     } catch (error) {
@@ -380,25 +423,28 @@ router.post(
     try {
       const attemptId = Number(req.params.attemptId);
       const { questionId, selectedOption } = req.body ?? {};
+      const parsedQuestionId = Number(questionId);
 
       if (
         !Number.isInteger(attemptId) ||
-        !Number.isInteger(Number(questionId)) ||
+        !Number.isInteger(parsedQuestionId) ||
         !['A', 'B', 'C', 'D', 'E'].includes(String(selectedOption))
       ) {
         return res.status(400).json({ error: 'Invalid answer payload.' });
       }
 
-      const [attempt] = await db
-        .select()
-        .from(examAttempts)
-        .where(
-          and(
-            eq(examAttempts.id, attemptId),
-            eq(examAttempts.studentId, req.student!.id)
+      const [attempt] = await withDbRetry(() =>
+        db
+          .select()
+          .from(examAttempts)
+          .where(
+            and(
+              eq(examAttempts.id, attemptId),
+              eq(examAttempts.studentId, req.student!.id)
+            )
           )
-        )
-        .limit(1);
+          .limit(1)
+      );
 
       if (!attempt) {
         return res.status(404).json({ error: 'Examination attempt not found.' });
@@ -416,21 +462,32 @@ router.post(
         });
       }
 
-      await db
-        .insert(studentAnswers)
-        .values({
-          attemptId,
-          questionId: Number(questionId),
-          selectedOption: String(selectedOption),
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [studentAnswers.attemptId, studentAnswers.questionId],
-          set: {
+      const { allowedQuestionIds } = await getCachedSanitizedExamQuestions(
+        attempt.examId
+      );
+      if (!allowedQuestionIds.has(parsedQuestionId)) {
+        return res.status(400).json({
+          error: 'Question does not belong to this examination.',
+        });
+      }
+
+      await withDbRetry(() =>
+        db
+          .insert(studentAnswers)
+          .values({
+            attemptId,
+            questionId: parsedQuestionId,
             selectedOption: String(selectedOption),
             updatedAt: new Date(),
-          },
-        });
+          })
+          .onConflictDoUpdate({
+            target: [studentAnswers.attemptId, studentAnswers.questionId],
+            set: {
+              selectedOption: String(selectedOption),
+              updatedAt: new Date(),
+            },
+          })
+      );
 
       res.json({ saved: true, savedAt: new Date().toISOString() });
     } catch (error) {
@@ -457,16 +514,18 @@ router.post(
         return res.status(400).json({ error: 'Invalid batch answers payload.' });
       }
 
-      const [attempt] = await db
-        .select()
-        .from(examAttempts)
-        .where(
-          and(
-            eq(examAttempts.id, attemptId),
-            eq(examAttempts.studentId, req.student!.id)
+      const [attempt] = await withDbRetry(() =>
+        db
+          .select()
+          .from(examAttempts)
+          .where(
+            and(
+              eq(examAttempts.id, attemptId),
+              eq(examAttempts.studentId, req.student!.id)
+            )
           )
-        )
-        .limit(1);
+          .limit(1)
+      );
 
       if (!attempt) {
         return res.status(404).json({ error: 'Examination attempt not found.' });
@@ -484,11 +543,9 @@ router.post(
         });
       }
 
-      const assignedRows = await db
-        .select({ questionId: examQuestions.questionId })
-        .from(examQuestions)
-        .where(eq(examQuestions.examId, attempt.examId));
-      const allowedQuestionIds = new Set(assignedRows.map((r) => r.questionId));
+      const { allowedQuestionIds } = await getCachedSanitizedExamQuestions(
+        attempt.examId
+      );
 
       const now = new Date();
       const entriesToSave: Array<{
@@ -518,16 +575,18 @@ router.post(
       }
 
       if (entriesToSave.length > 0) {
-        await db
-          .insert(studentAnswers)
-          .values(entriesToSave)
-          .onConflictDoUpdate({
-            target: [studentAnswers.attemptId, studentAnswers.questionId],
-            set: {
-              selectedOption: sql`excluded.selected_option`,
-              updatedAt: sql`excluded.updated_at`,
-            },
-          });
+        await withDbRetry(() =>
+          db
+            .insert(studentAnswers)
+            .values(entriesToSave)
+            .onConflictDoUpdate({
+              target: [studentAnswers.attemptId, studentAnswers.questionId],
+              set: {
+                selectedOption: sql`excluded.selected_option`,
+                updatedAt: sql`excluded.updated_at`,
+              },
+            })
+        );
       }
 
       res.json({
@@ -559,11 +618,13 @@ async function finalizeAttemptSubmission(
   attempt: typeof examAttempts.$inferSelect,
   reasonInput?: unknown
 ) {
-  const [exam] = await db
-    .select()
-    .from(examinations)
-    .where(eq(examinations.id, attempt.examId))
-    .limit(1);
+  const [exam] = await withDbRetry(() =>
+    db
+      .select()
+      .from(examinations)
+      .where(eq(examinations.id, attempt.examId))
+      .limit(1)
+  );
 
   if (attempt.status === 'submitted') {
     return {
@@ -584,20 +645,18 @@ async function finalizeAttemptSubmission(
     };
   }
 
-  const examQRows = await db
-    .select({
-      questionId: questions.id,
-      correctOption: questions.correctOption,
-      marks: questions.marks,
-    })
-    .from(examQuestions)
-    .innerJoin(questions, eq(examQuestions.questionId, questions.id))
-    .where(eq(examQuestions.examId, attempt.examId));
-
-  const savedAnswers = await db
-    .select()
-    .from(studentAnswers)
-    .where(eq(studentAnswers.attemptId, attempt.id));
+  const [examQRows, savedAnswers] = await Promise.all([
+    getCachedExamScoringQuestions(attempt.examId),
+    withDbRetry(() =>
+      db
+        .select({
+          questionId: studentAnswers.questionId,
+          selectedOption: studentAnswers.selectedOption,
+        })
+        .from(studentAnswers)
+        .where(eq(studentAnswers.attemptId, attempt.id))
+    ),
+  ]);
 
   const answerMap = new Map(
     savedAnswers.map((a) => [a.questionId, a.selectedOption])
@@ -607,26 +666,56 @@ async function finalizeAttemptSubmission(
   let totalMarks = 0;
   let correctCount = 0;
   const totalQuestions = examQRows.length;
+  const correctQuestionIds: number[] = [];
+  const incorrectQuestionIds: number[] = [];
 
   for (const q of examQRows) {
     totalMarks += q.marks;
     const chosen = answerMap.get(q.questionId) ?? null;
-    const isCorrect = chosen !== null && chosen === q.correctOption;
-    if (isCorrect) {
-      correctCount += 1;
-      score += q.marks;
-    }
     if (chosen !== null) {
-      await db
-        .update(studentAnswers)
-        .set({ isCorrect })
-        .where(
-          and(
-            eq(studentAnswers.attemptId, attempt.id),
-            eq(studentAnswers.questionId, q.questionId)
-          )
-        );
+      if (chosen === q.correctOption) {
+        correctCount += 1;
+        score += q.marks;
+        correctQuestionIds.push(q.questionId);
+      } else {
+        incorrectQuestionIds.push(q.questionId);
+      }
     }
+  }
+
+  const bulkGradeWrites: Promise<unknown>[] = [];
+  if (correctQuestionIds.length > 0) {
+    bulkGradeWrites.push(
+      withDbRetry(() =>
+        db
+          .update(studentAnswers)
+          .set({ isCorrect: true })
+          .where(
+            and(
+              eq(studentAnswers.attemptId, attempt.id),
+              inArray(studentAnswers.questionId, correctQuestionIds)
+            )
+          )
+      )
+    );
+  }
+  if (incorrectQuestionIds.length > 0) {
+    bulkGradeWrites.push(
+      withDbRetry(() =>
+        db
+          .update(studentAnswers)
+          .set({ isCorrect: false })
+          .where(
+            and(
+              eq(studentAnswers.attemptId, attempt.id),
+              inArray(studentAnswers.questionId, incorrectQuestionIds)
+            )
+          )
+      )
+    );
+  }
+  if (bulkGradeWrites.length > 0) {
+    await Promise.all(bulkGradeWrites);
   }
 
   const percentage =
@@ -637,20 +726,54 @@ async function finalizeAttemptSubmission(
       ? reasonInput
       : 'manual';
 
-  const [finalized] = await db
-    .update(examAttempts)
-    .set({
-      status: 'submitted',
-      submittedAt,
-      score,
-      totalMarks,
-      correctCount,
-      totalQuestions,
-      percentage,
-      submissionReason,
-    })
-    .where(eq(examAttempts.id, attempt.id))
-    .returning();
+  const [finalized] = await withDbRetry(() =>
+    db
+      .update(examAttempts)
+      .set({
+        status: 'submitted',
+        submittedAt,
+        score,
+        totalMarks,
+        correctCount,
+        totalQuestions,
+        percentage,
+        submissionReason,
+      })
+      .where(
+        and(
+          eq(examAttempts.id, attempt.id),
+          eq(examAttempts.status, 'in_progress')
+        )
+      )
+      .returning()
+  );
+
+  if (!finalized) {
+    const [latest] = await withDbRetry(() =>
+      db
+        .select()
+        .from(examAttempts)
+        .where(eq(examAttempts.id, attempt.id))
+        .limit(1)
+    );
+    return {
+      alreadySubmitted: true,
+      resultsPublished: exam?.resultsPublished ?? false,
+      submissionReason: latest?.submissionReason ?? attempt.submissionReason,
+      securityViolations: latest?.securityViolations ?? attempt.securityViolations,
+      result:
+        exam?.resultsPublished && latest
+          ? {
+              score: latest.score,
+              totalMarks: latest.totalMarks,
+              correctCount: latest.correctCount,
+              totalQuestions: latest.totalQuestions,
+              percentage: latest.percentage,
+              submittedAt: latest.submittedAt,
+            }
+          : null,
+    };
+  }
 
   return {
     submitted: true,
@@ -688,16 +811,18 @@ router.post(
         return res.status(400).json({ error: 'Invalid security violation type.' });
       }
 
-      const [attempt] = await db
-        .select()
-        .from(examAttempts)
-        .where(
-          and(
-            eq(examAttempts.id, attemptId),
-            eq(examAttempts.studentId, req.student!.id)
+      const [attempt] = await withDbRetry(() =>
+        db
+          .select()
+          .from(examAttempts)
+          .where(
+            and(
+              eq(examAttempts.id, attemptId),
+              eq(examAttempts.studentId, req.student!.id)
+            )
           )
-        )
-        .limit(1);
+          .limit(1)
+      );
 
       if (!attempt) {
         return res.status(404).json({ error: 'Examination attempt not found.' });
@@ -711,16 +836,18 @@ router.post(
         });
       }
 
-      const [updated] = await db
-        .update(examAttempts)
-        .set({ securityViolations: sql`${examAttempts.securityViolations} + 1` })
-        .where(
-          and(
-            eq(examAttempts.id, attempt.id),
-            eq(examAttempts.status, 'in_progress')
+      const [updated] = await withDbRetry(() =>
+        db
+          .update(examAttempts)
+          .set({ securityViolations: sql`${examAttempts.securityViolations} + 1` })
+          .where(
+            and(
+              eq(examAttempts.id, attempt.id),
+              eq(examAttempts.status, 'in_progress')
+            )
           )
-        )
-        .returning();
+          .returning()
+      );
 
       if (!updated) {
         return res.json({
@@ -768,16 +895,18 @@ router.post(
         return res.status(400).json({ error: 'Invalid attempt ID.' });
       }
 
-      const [attempt] = await db
-        .select()
-        .from(examAttempts)
-        .where(
-          and(
-            eq(examAttempts.id, attemptId),
-            eq(examAttempts.studentId, req.student!.id)
+      const [attempt] = await withDbRetry(() =>
+        db
+          .select()
+          .from(examAttempts)
+          .where(
+            and(
+              eq(examAttempts.id, attemptId),
+              eq(examAttempts.studentId, req.student!.id)
+            )
           )
-        )
-        .limit(1);
+          .limit(1)
+      );
 
       if (!attempt) {
         return res.status(404).json({ error: 'Attempt not found.' });

@@ -49,8 +49,14 @@ const isServerless = Boolean(
 export const createPool = () => {
   if (!global._postgresPool) {
     const databaseUrl = getDatabaseUrl();
-    const maxConnections = isServerless ? 2 : 3;
-    const idleTimeoutMillis = isServerless ? 1500 : 5000;
+    const parsedPoolMax = Number(process.env.DB_POOL_MAX);
+    const maxConnections =
+      Number.isInteger(parsedPoolMax) && parsedPoolMax > 0
+        ? parsedPoolMax
+        : isServerless
+          ? 4
+          : 15;
+    const idleTimeoutMillis = isServerless ? 3000 : 15000;
 
     global._postgresPool = databaseUrl
       ? new Pool({
@@ -59,7 +65,7 @@ export const createPool = () => {
           max: maxConnections,
           idleTimeoutMillis,
           allowExitOnIdle: true,
-          connectionTimeoutMillis: 15000,
+          connectionTimeoutMillis: 20000,
         })
       : new Pool({
           host: process.env.SQL_HOST,
@@ -69,7 +75,7 @@ export const createPool = () => {
           max: maxConnections,
           idleTimeoutMillis,
           allowExitOnIdle: true,
-          connectionTimeoutMillis: 15000,
+          connectionTimeoutMillis: 20000,
         });
 
     global._postgresPool.on('error', (err) => {
@@ -91,13 +97,19 @@ function isTransientDbError(err: unknown): boolean {
 
   return (
     code === '53300' ||
+    code === '57P01' ||
+    code === '08006' ||
+    code === '08003' ||
     code === 'XX000' ||
     code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
     code === 'ETIMEDOUT' ||
     message.includes('emaxconnsession') ||
     message.includes('max clients reached') ||
     message.includes('too many clients') ||
-    message.includes('connection terminated unexpectedly')
+    message.includes('connection terminated unexpectedly') ||
+    message.includes('connection timeout') ||
+    message.includes('timeout exceeded when trying to connect')
   );
 }
 

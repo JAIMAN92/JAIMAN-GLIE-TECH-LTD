@@ -7,6 +7,7 @@ import {
   FileText,
   Plus,
   Printer,
+  Shuffle,
   Trash2,
   Users,
   X,
@@ -59,6 +60,7 @@ interface ExamRow {
   instructions: string;
   isActive: boolean;
   resultsPublished: boolean;
+  shuffleQuestions?: boolean;
   questionIds: number[];
   submissionCount: number;
   inProgressCount: number;
@@ -156,8 +158,10 @@ export function AdminCbtManagementSection({
       'Read each question carefully. Select the most accurate option (A, B, C, D, or E). Answers are saved automatically.',
     isActive: true,
     resultsPublished: true,
+    shuffleQuestions: false,
     questionIds: [] as number[],
   });
+  const [pickerDisplayOrder, setPickerDisplayOrder] = useState<number[]>([]);
 
   // Submissions Monitor modal
   const [monitorExam, setMonitorExam] = useState<ExamRow | null>(null);
@@ -262,8 +266,10 @@ export function AdminCbtManagementSection({
         instructions: ex.instructions,
         isActive: ex.isActive,
         resultsPublished: ex.resultsPublished,
+        shuffleQuestions: Boolean(ex.shuffleQuestions),
         questionIds: ex.questionIds,
       });
+      setPickerDisplayOrder(ex.questionIds);
     } else {
       setEditingExam(null);
       const defaultSub = subjects[0] ? String(subjects[0].id) : '';
@@ -284,8 +290,10 @@ export function AdminCbtManagementSection({
           'Read each question carefully. Select the most accurate option (A, B, C, D, or E). Answers are saved automatically.',
         isActive: true,
         resultsPublished: true,
+        shuffleQuestions: false,
         questionIds: defaultQIds,
       });
+      setPickerDisplayOrder(defaultQIds);
     }
     setShowExamModal(true);
   };
@@ -328,6 +336,43 @@ export function AdminCbtManagementSection({
       headers: { Authorization: `Bearer ${token}` },
     });
     loadAll();
+  };
+
+  const toggleExamShuffle = async (ex: ExamRow) => {
+    setErr('');
+    setMsg('');
+    const res = await fetch(`/api/admin/examinations/${ex.id}/shuffle`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ shuffleQuestions: !ex.shuffleQuestions }),
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      setErr(json.error || 'Unable to update shuffle setting.');
+      return;
+    }
+    setMsg(
+      !ex.shuffleQuestions
+        ? `Per-candidate question shuffling enabled for "${ex.title}".`
+        : `Per-candidate question shuffling disabled for "${ex.title}".`
+    );
+    loadAll();
+  };
+
+  const handleShuffleModalQuestionOrder = () => {
+    setExamForm((prev) => {
+      if (prev.questionIds.length < 2) return prev;
+      const shuffled = [...prev.questionIds];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      setPickerDisplayOrder(shuffled);
+      return { ...prev, questionIds: shuffled };
+    });
   };
 
   const toggleExamResultsPublished = async (exId: number, current: boolean) => {
@@ -504,9 +549,19 @@ export function AdminCbtManagementSection({
 
   // EXAMINATION MANAGEMENT VIEW
   if (mode === 'examinations') {
-    const subjectQuestions = questions.filter(
+    const rawSubjectQuestions = questions.filter(
       (q) => String(q.subjectId) === examForm.subjectId
     );
+    const orderRank = new Map<number, number>();
+    pickerDisplayOrder.forEach((id, idx) => orderRank.set(id, idx));
+    const subjectQuestions = [...rawSubjectQuestions].sort((a, b) => {
+      const rankA = orderRank.get(a.id);
+      const rankB = orderRank.get(b.id);
+      if (rankA !== undefined && rankB !== undefined) return rankA - rankB;
+      if (rankA !== undefined) return -1;
+      if (rankB !== undefined) return 1;
+      return a.id - b.id;
+    });
 
     return (
       <div className="space-y-6">
@@ -584,15 +639,29 @@ export function AdminCbtManagementSection({
                   <p className="font-mono-tabular text-xs text-slate-500">
                     Date: {ex.examDate} ({ex.startTime}–{ex.endTime}) ·{' '}
                     {ex.durationMinutes} mins · {ex.questionIds.length} Qs ·{' '}
-                    {ex.submissionCount} Submitted · {ex.inProgressCount} Active
+                    {ex.submissionCount} Submitted · {ex.inProgressCount} Active ·{' '}
+                    {ex.shuffleQuestions ? 'Shuffled per candidate' : 'Fixed order'}
                   </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
                   <button
                     type="button"
+                    onClick={() => toggleExamShuffle(ex)}
+                    title="Toggle unique random question order for each student or applicant"
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold whitespace-nowrap shrink-0 ${
+                      ex.shuffleQuestions
+                        ? 'border-sky-200 bg-sky-50 text-[#1769AA]'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Shuffle className="w-3.5 h-3.5" />
+                    {ex.shuffleQuestions ? 'Shuffle: On' : 'Shuffle: Off'}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => toggleExamActive(ex)}
-                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold ${
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold whitespace-nowrap shrink-0 ${
                       ex.isActive
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
                         : 'border-slate-200 bg-slate-100 text-slate-600'
@@ -677,6 +746,7 @@ export function AdminCbtManagementSection({
                           subjectId: subId,
                           questionIds: matchingQs,
                         });
+                        setPickerDisplayOrder(matchingQs);
                       }}
                       className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm"
                     >
@@ -845,28 +915,40 @@ export function AdminCbtManagementSection({
 
                 {/* Question Picker */}
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <label className="text-xs font-semibold text-[#123B72]">
                       Attach Questions ({examForm.questionIds.length} selected)
                     </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setExamForm({
-                          ...examForm,
-                          questionIds:
-                            examForm.questionIds.length ===
-                            subjectQuestions.length
-                              ? []
-                              : subjectQuestions.map((q) => q.id),
-                        })
-                      }
-                      className="text-xs font-semibold text-[#1769AA] hover:underline"
-                    >
-                      {examForm.questionIds.length === subjectQuestions.length
-                        ? 'Deselect All'
-                        : 'Select All Subject Questions'}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {examForm.questionIds.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={handleShuffleModalQuestionOrder}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-[#E83E8C] hover:underline whitespace-nowrap shrink-0"
+                        >
+                          <Shuffle className="w-3.5 h-3.5" />
+                          Shuffle List Order
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExamForm({
+                            ...examForm,
+                            questionIds:
+                              examForm.questionIds.length ===
+                              subjectQuestions.length
+                                ? []
+                                : subjectQuestions.map((q) => q.id),
+                          })
+                        }
+                        className="text-xs font-semibold text-[#1769AA] hover:underline whitespace-nowrap shrink-0"
+                      >
+                        {examForm.questionIds.length === subjectQuestions.length
+                          ? 'Deselect All'
+                          : 'Select All Subject Questions'}
+                      </button>
+                    </div>
                   </div>
                   <div className="max-h-44 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-200">
                     {subjectQuestions.length === 0 ? (
@@ -876,7 +958,8 @@ export function AdminCbtManagementSection({
                       </p>
                     ) : (
                       subjectQuestions.map((q) => {
-                        const checked = examForm.questionIds.includes(q.id);
+                        const selectedOrderIdx = examForm.questionIds.indexOf(q.id);
+                        const checked = selectedOrderIdx !== -1;
                         return (
                           <label
                             key={q.id}
@@ -895,6 +978,11 @@ export function AdminCbtManagementSection({
                               }}
                               className="mt-0.5 accent-[#123B72]"
                             />
+                            {checked && (
+                              <span className="font-mono-tabular text-[11px] font-bold text-[#1769AA] shrink-0 min-w-[24px]">
+                                #{selectedOrderIdx + 1}
+                              </span>
+                            )}
                             <span className="text-[#1E293B]">
                               <strong className="text-[#1769AA] mr-1">
                                 [{q.topic}]
@@ -913,7 +1001,7 @@ export function AdminCbtManagementSection({
                   </div>
                 </div>
 
-                <div className="flex flex-wrap gap-6 pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   <label className="flex items-center gap-2 text-xs font-medium text-[#1E293B]">
                     <input
                       type="checkbox"
@@ -938,6 +1026,29 @@ export function AdminCbtManagementSection({
                       className="accent-[#123B72]"
                     />
                     Publish Scores Immediately Upon Submission
+                  </label>
+                  <label className="sm:col-span-2 flex items-start gap-2.5 p-3 rounded-lg bg-[#F5F8FC] border border-slate-200 text-xs text-[#1E293B] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={examForm.shuffleQuestions}
+                      onChange={(e) =>
+                        setExamForm({
+                          ...examForm,
+                          shuffleQuestions: e.target.checked,
+                        })
+                      }
+                      className="mt-0.5 accent-[#123B72]"
+                    />
+                    <span>
+                      <strong className="block text-[#123B72]">
+                        Shuffle Questions for Each Student / Applicant
+                      </strong>
+                      <span className="text-slate-600">
+                        Automatically randomizes the question sequence for each
+                        candidate when they begin the exam (and preserves their
+                        exact sequence if they resume).
+                      </span>
+                    </span>
                   </label>
                 </div>
 

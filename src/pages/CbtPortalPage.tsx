@@ -154,6 +154,14 @@ export function CbtPortalPage() {
   const currentIndexRef = useRef(0);
   const dirtyQuestionIdsRef = useRef<Set<number>>(new Set());
   const syncInFlightRef = useRef(false);
+  const optionFlushTimerRef = useRef<number | null>(null);
+
+  const clearOptionFlushTimer = useCallback(() => {
+    if (optionFlushTimerRef.current !== null) {
+      window.clearTimeout(optionFlushTimerRef.current);
+      optionFlushTimerRef.current = null;
+    }
+  }, []);
 
   const exitExamFullscreen = useCallback(() => {
     try {
@@ -348,24 +356,33 @@ export function CbtPortalPage() {
     }
   }, [currentIndex, activeAttemptId, student, submissionOutcome, persistLocalDraft]);
 
-  // Periodic background auto-save (every 15 seconds) + online reconnect recovery
+  // Jittered periodic background auto-save (15-21s per candidate) + online reconnect recovery
   useEffect(() => {
     if (!activeAttemptId || !student || submissionOutcome) return;
 
-    const runPeriodicAutosave = () => {
-      persistLocalDraft(
-        answersRef.current,
-        currentIndexRef.current,
-        activeAttemptId
-      );
-      if (dirtyQuestionIdsRef.current.size > 0) {
-        syncPendingAnswers(activeAttemptId, false);
-      }
+    let disposed = false;
+    let periodicTimerId: number | null = null;
+
+    const scheduleNextAutosave = () => {
+      if (disposed) return;
+      const jitterMs = 15000 + Math.floor(Math.random() * 6000);
+      periodicTimerId = window.setTimeout(() => {
+        if (disposed) return;
+        persistLocalDraft(
+          answersRef.current,
+          currentIndexRef.current,
+          activeAttemptId
+        );
+        if (dirtyQuestionIdsRef.current.size > 0) {
+          void syncPendingAnswers(activeAttemptId, false);
+        }
+        scheduleNextAutosave();
+      }, jitterMs);
     };
 
     const handleOnline = () => {
       if (dirtyQuestionIdsRef.current.size > 0) {
-        syncPendingAnswers(activeAttemptId, false);
+        void syncPendingAnswers(activeAttemptId, false);
       }
     };
 
@@ -377,12 +394,16 @@ export function CbtPortalPage() {
       );
     };
 
-    const intervalId = window.setInterval(runPeriodicAutosave, 15000);
+    scheduleNextAutosave();
     window.addEventListener('online', handleOnline);
     window.addEventListener('pagehide', handlePageHide);
 
     return () => {
-      window.clearInterval(intervalId);
+      disposed = true;
+      if (periodicTimerId !== null) {
+        window.clearTimeout(periodicTimerId);
+      }
+      clearOptionFlushTimer();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('pagehide', handlePageHide);
     };
@@ -392,6 +413,7 @@ export function CbtPortalPage() {
     submissionOutcome,
     persistLocalDraft,
     syncPendingAnswers,
+    clearOptionFlushTimer,
   ]);
 
   const handleSubmitExam = useCallback(
@@ -406,6 +428,7 @@ export function CbtPortalPage() {
       if (isAuto && autoSubmittedRef.current) return;
       if (isAuto) autoSubmittedRef.current = true;
 
+      clearOptionFlushTimer();
       setSubmittingExam(true);
       setShowConfirmModal(false);
       setSecurityLockMessage(null);
@@ -458,6 +481,7 @@ export function CbtPortalPage() {
       fetchAssignedExams,
       exitExamFullscreen,
       syncPendingAnswers,
+      clearOptionFlushTimer,
     ]
   );
 
@@ -523,6 +547,7 @@ export function CbtPortalPage() {
             setSecurityViolations(data.securityViolations);
           }
           if (data.autoSubmitted) {
+            clearOptionFlushTimer();
             if (student && activeAttemptId) {
               clearExamDraft(student.id, activeAttemptId);
             }
@@ -545,7 +570,14 @@ export function CbtPortalPage() {
         setSecurityViolations((v) => v + 1);
       }
     },
-    [studentToken, student, activeAttemptId, exitExamFullscreen, fetchAssignedExams]
+    [
+      studentToken,
+      student,
+      activeAttemptId,
+      exitExamFullscreen,
+      fetchAssignedExams,
+      clearOptionFlushTimer,
+    ]
   );
 
   useEffect(() => {
@@ -686,6 +718,7 @@ export function CbtPortalPage() {
   };
 
   const handleStudentLogout = async () => {
+    clearOptionFlushTimer();
     exitExamFullscreen();
     if (studentToken) {
       await fetch('/api/cbt/logout', {
@@ -829,7 +862,7 @@ export function CbtPortalPage() {
     }
   };
 
-  const handleSelectOption = async (questionId: number, option: string) => {
+  const handleSelectOption = (questionId: number, option: string) => {
     if (!studentToken || !student || !activeAttemptId) return;
 
     const nextAnswers = { ...answersRef.current, [questionId]: option };
@@ -846,50 +879,14 @@ export function CbtPortalPage() {
       updatedAt: Date.now(),
     });
 
+    // Coalesce rapid option clicks into a single batch upsert (1.8s debounce)
     setSaveStatus('saving');
-
-    try {
-      const res = await fetch(`/api/cbt/attempts/${activeAttemptId}/answer`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${studentToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ questionId, selectedOption: option }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (answersRef.current[questionId] === option) {
-          dirtyQuestionIdsRef.current.delete(questionId);
-        }
-        const remainingDirty = dirtyQuestionIdsRef.current.size;
-        setPendingSyncCount(remainingDirty);
-        saveExamDraft(student.id, activeAttemptId, {
-          answers: answersRef.current,
-          currentIndex: currentIndexRef.current,
-          dirtyQuestionIds: Array.from(dirtyQuestionIdsRef.current),
-          updatedAt: Date.now(),
-        });
-        setLastSavedAt(
-          data.savedAt
-            ? new Date(data.savedAt).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-              })
-            : new Date().toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit',
-              })
-        );
-        setSaveStatus(remainingDirty === 0 ? 'saved' : 'offline_cached');
-      } else {
-        setSaveStatus('offline_cached');
-      }
-    } catch {
-      setSaveStatus('offline_cached');
-    }
+    clearOptionFlushTimer();
+    const attemptIdSnapshot = activeAttemptId;
+    optionFlushTimerRef.current = window.setTimeout(() => {
+      optionFlushTimerRef.current = null;
+      void syncPendingAnswers(attemptIdSnapshot, false);
+    }, 1800);
   };
 
   // VIEW 1: STUDENT AUTHENTICATION GATE

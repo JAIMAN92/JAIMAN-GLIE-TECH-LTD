@@ -16,11 +16,13 @@ import {
   DEFAULT_NAVIGATION,
   DEFAULT_VISION,
 } from '../shared/defaults.ts';
+import { ensureAllSchemaColumns } from './authMiddleware.ts';
 
 let seededPromise: Promise<void> | null = null;
 
 async function runSeed() {
   try {
+    await ensureAllSchemaColumns();
     const defaultSections: Array<{ key: string; content: unknown }> = [
       { key: 'homepage', content: DEFAULT_HOMEPAGE },
       { key: 'about', content: DEFAULT_ABOUT },

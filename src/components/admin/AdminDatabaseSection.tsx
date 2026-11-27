@@ -191,6 +191,7 @@ CREATE TABLE IF NOT EXISTS examinations (
   instructions TEXT NOT NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
   results_published BOOLEAN NOT NULL DEFAULT TRUE,
+  shuffle_questions BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 

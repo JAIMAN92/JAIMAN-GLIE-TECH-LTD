@@ -18,7 +18,7 @@ import {
   hashPassword,
   hashSessionToken,
   isValidEmail,
-  verifyPassword,
+  verifyPasswordAsync,
 } from '../crypto.ts';
 
 const router = Router();
@@ -261,7 +261,10 @@ router.post('/login', async (req, res) => {
       envMatches = crypto.timingSafeEqual(providedDigest, expectedDigest);
     }
 
-    if (!matched || (!verifyPassword(password, matched.passwordHash) && !envMatches)) {
+    if (
+      !matched ||
+      (!(await verifyPasswordAsync(password, matched.passwordHash)) && !envMatches)
+    ) {
       await recordFailedLogin(rateKey);
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
@@ -328,7 +331,7 @@ router.post('/change-password', requireAdmin, async (req: AdminRequest, res) => 
     if (!dbAdmin.mustChangePassword) {
       if (
         typeof currentPassword !== 'string' ||
-        !verifyPassword(currentPassword, dbAdmin.passwordHash)
+        !(await verifyPasswordAsync(currentPassword, dbAdmin.passwordHash))
       ) {
         return res
           .status(400)
@@ -343,7 +346,7 @@ router.post('/change-password', requireAdmin, async (req: AdminRequest, res) => 
       });
     }
 
-    if (verifyPassword(newPassword, dbAdmin.passwordHash)) {
+    if (await verifyPasswordAsync(newPassword, dbAdmin.passwordHash)) {
       return res.status(400).json({
         error: 'New password cannot be the same as your existing password.',
       });

@@ -21,6 +21,41 @@ export function verifyPassword(password: string, stored: string): boolean {
   }
 }
 
+export async function verifyPasswordAsync(
+  password: string,
+  stored: string
+): Promise<boolean> {
+  const parts = stored.split(':');
+  if (parts.length !== 2) return false;
+  const [salt, keyHex] = parts;
+  if (!salt || !keyHex) return false;
+
+  let keyBuf: Buffer;
+  try {
+    keyBuf = Buffer.from(keyHex, 'hex');
+  } catch {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    crypto.scrypt(password, salt, 64, (err, derivedBuf) => {
+      if (err) {
+        resolve(false);
+        return;
+      }
+      try {
+        if (keyBuf.length !== derivedBuf.length) {
+          resolve(false);
+          return;
+        }
+        resolve(crypto.timingSafeEqual(keyBuf, derivedBuf));
+      } catch {
+        resolve(false);
+      }
+    });
+  });
+}
+
 export function generateSessionToken(): string {
   return crypto.randomBytes(32).toString('hex');
 }

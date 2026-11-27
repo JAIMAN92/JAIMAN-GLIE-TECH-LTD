@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import { and, eq, gt, isNull, sql } from 'drizzle-orm';
-import { db } from '../db/index.ts';
+import { db, withDbRetry } from '../db/index.ts';
 import {
   adminActivityLogs,
   adminSessions,
@@ -21,7 +21,7 @@ export async function ensureAdminRoleColumns(): Promise<void> {
       try {
         const check = await db.execute(sql`
           SELECT column_name FROM information_schema.columns
-          WHERE table_schema = 'public'
+          WHERE table_schema = current_schema()
             AND table_name = 'admins'
             AND column_name IN ('role', 'is_active')
         `);
@@ -55,7 +55,7 @@ export async function ensureQuestionColumns(): Promise<void> {
       try {
         const check = await db.execute(sql`
           SELECT column_name FROM information_schema.columns
-          WHERE table_schema = 'public'
+          WHERE table_schema = current_schema()
             AND table_name = 'questions'
             AND column_name IN ('image_url', 'option_e')
         `);
@@ -91,7 +91,7 @@ export async function ensureSchoolColumns(): Promise<void> {
       try {
         const check = await db.execute(sql`
           SELECT column_name FROM information_schema.columns
-          WHERE table_schema = 'public'
+          WHERE table_schema = current_schema()
             AND table_name = 'schools'
             AND column_name = 'logo_url'
         `);
@@ -112,6 +112,51 @@ export async function ensureSchoolColumns(): Promise<void> {
     })();
   }
   return schoolColumnsReadyPromise;
+}
+
+let examColumnsReadyPromise: Promise<void> | null = null;
+
+export async function ensureExamColumns(): Promise<void> {
+  if (!examColumnsReadyPromise) {
+    examColumnsReadyPromise = (async () => {
+      try {
+        const check = await db.execute(sql`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'examinations'
+            AND column_name IN ('arm', 'shuffle_questions')
+        `);
+        const existing = new Set(
+          (check.rows ?? []).map((r) =>
+            String((r as { column_name?: string }).column_name)
+          )
+        );
+        if (!existing.has('arm')) {
+          await db.execute(
+            sql`ALTER TABLE examinations ADD COLUMN IF NOT EXISTS arm TEXT NOT NULL DEFAULT 'ALL'`
+          );
+        }
+        if (!existing.has('shuffle_questions')) {
+          await db.execute(
+            sql`ALTER TABLE examinations ADD COLUMN IF NOT EXISTS shuffle_questions BOOLEAN NOT NULL DEFAULT FALSE`
+          );
+        }
+      } catch (err) {
+        examColumnsReadyPromise = null;
+        console.warn('Exam column migration check:', err);
+      }
+    })();
+  }
+  return examColumnsReadyPromise;
+}
+
+export async function ensureAllSchemaColumns(): Promise<void> {
+  await Promise.all([
+    ensureAdminRoleColumns(),
+    ensureQuestionColumns(),
+    ensureSchoolColumns(),
+    ensureExamColumns(),
+  ]);
 }
 
 export function sanitizeQuestionImageUrl(raw: unknown): string | null {
@@ -283,7 +328,7 @@ export const requireAdmin = async (
   }
 
   try {
-    await ensureAdminRoleColumns();
+    await ensureAllSchemaColumns();
     const tokenHash = hashSessionToken(rawToken);
     const now = new Date();
 
@@ -374,6 +419,36 @@ export const requireSuperAdmin = (
   return next();
 };
 
+interface CachedStudentSessionEntry {
+  student: NonNullable<StudentRequest['student']>;
+  expiresAtMs: number;
+  cachedAtMs: number;
+}
+
+const STUDENT_SESSION_CACHE_TTL_MS = 15_000;
+const MAX_STUDENT_SESSION_CACHE_ENTRIES = 2_000;
+const studentSessionCache = new Map<string, CachedStudentSessionEntry>();
+
+export function invalidateStudentSessionByTokenHash(tokenHash: string): void {
+  studentSessionCache.delete(tokenHash);
+}
+
+export function invalidateStudentSessionsForStudent(studentId: number): void {
+  for (const [tokenHash, entry] of studentSessionCache.entries()) {
+    if (entry.student.id === studentId) {
+      studentSessionCache.delete(tokenHash);
+    }
+  }
+}
+
+export function invalidateStudentSessionsForSchool(schoolId: number): void {
+  for (const [tokenHash, entry] of studentSessionCache.entries()) {
+    if (entry.student.schoolId === schoolId) {
+      studentSessionCache.delete(tokenHash);
+    }
+  }
+}
+
 export const requireStudent = async (
   req: StudentRequest,
   res: Response,
@@ -393,36 +468,51 @@ export const requireStudent = async (
 
   try {
     const tokenHash = hashSessionToken(rawToken);
-    const now = new Date();
+    const nowMs = Date.now();
+    const cached = studentSessionCache.get(tokenHash);
+    if (
+      cached &&
+      nowMs < cached.expiresAtMs &&
+      nowMs - cached.cachedAtMs < STUDENT_SESSION_CACHE_TTL_MS
+    ) {
+      req.student = cached.student;
+      return next();
+    }
 
-    await ensureSchoolColumns();
-    const rows = await db
-      .select({
-        sessionId: studentSessions.id,
-        studentId: students.id,
-        schoolId: students.schoolId,
-        schoolName: schools.name,
-        schoolLogoUrl: schools.logoUrl,
-        examNumber: students.examNumber,
-        fullName: students.fullName,
-        classLevel: students.classLevel,
-        arm: students.arm,
-        studentActive: students.isActive,
-        schoolActive: schools.isActive,
-      })
-      .from(studentSessions)
-      .innerJoin(students, eq(studentSessions.studentId, students.id))
-      .innerJoin(schools, eq(students.schoolId, schools.id))
-      .where(
-        and(
-          eq(studentSessions.tokenHash, tokenHash),
-          isNull(studentSessions.revokedAt),
-          gt(studentSessions.expiresAt, now)
+    const now = new Date(nowMs);
+
+    await ensureAllSchemaColumns();
+    const rows = await withDbRetry(() =>
+      db
+        .select({
+          sessionId: studentSessions.id,
+          expiresAt: studentSessions.expiresAt,
+          studentId: students.id,
+          schoolId: students.schoolId,
+          schoolName: schools.name,
+          schoolLogoUrl: schools.logoUrl,
+          examNumber: students.examNumber,
+          fullName: students.fullName,
+          classLevel: students.classLevel,
+          arm: students.arm,
+          studentActive: students.isActive,
+          schoolActive: schools.isActive,
+        })
+        .from(studentSessions)
+        .innerJoin(students, eq(studentSessions.studentId, students.id))
+        .innerJoin(schools, eq(students.schoolId, schools.id))
+        .where(
+          and(
+            eq(studentSessions.tokenHash, tokenHash),
+            isNull(studentSessions.revokedAt),
+            gt(studentSessions.expiresAt, now)
+          )
         )
-      )
-      .limit(1);
+        .limit(1)
+    );
 
     if (rows.length === 0) {
+      studentSessionCache.delete(tokenHash);
       return res
         .status(401)
         .json({ error: 'Examination session expired. Please log in again.' });
@@ -430,13 +520,14 @@ export const requireStudent = async (
 
     const row = rows[0];
     if (!row.studentActive || !row.schoolActive) {
+      studentSessionCache.delete(tokenHash);
       return res.status(403).json({
         error:
           'This student or school account is currently deactivated. Contact your school administrator.',
       });
     }
 
-    req.student = {
+    const studentPayload: NonNullable<StudentRequest['student']> = {
       id: row.studentId,
       schoolId: row.schoolId,
       schoolName: row.schoolName,
@@ -447,6 +538,20 @@ export const requireStudent = async (
       arm: row.arm,
       sessionId: row.sessionId,
     };
+
+    if (studentSessionCache.size >= MAX_STUDENT_SESSION_CACHE_ENTRIES) {
+      const oldestKey = studentSessionCache.keys().next().value;
+      if (oldestKey) {
+        studentSessionCache.delete(oldestKey);
+      }
+    }
+    studentSessionCache.set(tokenHash, {
+      student: studentPayload,
+      expiresAtMs: row.expiresAt.getTime(),
+      cachedAtMs: nowMs,
+    });
+
+    req.student = studentPayload;
 
     return next();
   } catch (error) {

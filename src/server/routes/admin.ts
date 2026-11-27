@@ -20,8 +20,12 @@ import {
 } from '../../db/schema.ts';
 import {
   type AdminRequest,
+  ensureAllSchemaColumns,
+  ensureExamColumns,
   ensureQuestionColumns,
   ensureSchoolColumns,
+  invalidateStudentSessionsForSchool,
+  invalidateStudentSessionsForStudent,
   logAdminActivity,
   normalizeAdminRole,
   requireAdmin,
@@ -29,6 +33,7 @@ import {
   sanitizeImageUrl,
   sanitizeQuestionImageUrl,
 } from '../authMiddleware.ts';
+import { invalidateCbtExamCache } from '../cbtCache.ts';
 import {
   escapeCsvCell,
   hashPassword,
@@ -44,6 +49,7 @@ router.use(requireAdmin);
 // 1. DASHBOARD OVERVIEW
 router.get('/overview', requireSuperAdmin, async (_req: AdminRequest, res) => {
   try {
+    await ensureAllSchemaColumns();
     const [
       [{ value: totalSchools }],
       [{ value: totalStudents }],
@@ -72,7 +78,12 @@ router.get('/overview', requireSuperAdmin, async (_req: AdminRequest, res) => {
     ]);
 
     const todayStr = new Date().toISOString().slice(0, 10);
-    const allExams = await db.select().from(examinations);
+    const allExams = await db
+      .select({
+        isActive: examinations.isActive,
+        examDate: examinations.examDate,
+      })
+      .from(examinations);
     const completedExamsCount = allExams.filter(
       (e) => !e.isActive || e.examDate < todayStr
     ).length;
@@ -468,6 +479,7 @@ router.put('/schools/:id', requireSuperAdmin, async (req: AdminRequest, res) => 
       targetDetails: `${updated.name} (${updated.code})`,
     });
 
+    invalidateStudentSessionsForSchool(id);
     res.json({ school: updated });
   } catch (error) {
     console.error('Update school error:', error);
@@ -501,6 +513,7 @@ router.patch('/schools/:id/toggle', requireSuperAdmin, async (req: AdminRequest,
       targetDetails: updated.name,
     });
 
+    invalidateStudentSessionsForSchool(id);
     res.json({ school: updated });
   } catch (error) {
     console.error('Toggle school error:', error);
@@ -544,6 +557,8 @@ router.delete('/schools/:id', requireSuperAdmin, async (req: AdminRequest, res) 
   try {
     const id = Number(req.params.id);
     await db.delete(schools).where(eq(schools.id, id));
+    invalidateStudentSessionsForSchool(id);
+    invalidateCbtExamCache();
     res.json({ success: true });
   } catch (error) {
     console.error('Delete school error:', error);
@@ -1366,6 +1381,7 @@ router.put('/students/:id', async (req: AdminRequest, res) => {
       return res.status(404).json({ error: 'Student not found.' });
     }
 
+    invalidateStudentSessionsForStudent(id);
     res.json({
       student: {
         id: updated.id,
@@ -1399,6 +1415,7 @@ router.patch('/students/:id/toggle', async (req: AdminRequest, res) => {
       .set({ isActive: !existing.isActive })
       .where(eq(students.id, id))
       .returning();
+    invalidateStudentSessionsForStudent(id);
     res.json({
       student: {
         id: updated.id,
@@ -1415,6 +1432,7 @@ router.delete('/students/:id', async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     await db.delete(students).where(eq(students.id, id));
+    invalidateStudentSessionsForStudent(id);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete student error:', error);
@@ -1473,6 +1491,7 @@ router.post('/subjects', requireSuperAdmin, async (req: AdminRequest, res) => {
       })
       .returning();
 
+    invalidateCbtExamCache();
     res.status(201).json({ subject: created });
   } catch (error) {
     console.error('Create subject error:', error);
@@ -1486,6 +1505,7 @@ router.delete('/subjects/:id', requireSuperAdmin, async (req: AdminRequest, res)
   try {
     const id = Number(req.params.id);
     await db.delete(subjects).where(eq(subjects.id, id));
+    invalidateCbtExamCache();
     res.json({ success: true });
   } catch (error) {
     console.error('Delete subject error:', error);
@@ -1599,6 +1619,7 @@ router.post('/questions', async (req: AdminRequest, res) => {
       })
       .returning();
 
+    invalidateCbtExamCache();
     res.status(201).json({ question: created });
   } catch (error) {
     console.error('Create question error:', error);
@@ -1716,6 +1737,7 @@ router.post('/questions/import', async (req: AdminRequest, res) => {
       targetDetails: `Imported ${imported} question(s)`,
     });
 
+    invalidateCbtExamCache();
     res.json({ imported, errors });
   } catch (error) {
     console.error('Import questions error:', error);
@@ -1875,6 +1897,7 @@ router.post('/questions/bulk', async (req: AdminRequest, res) => {
       }`,
     });
 
+    invalidateCbtExamCache(targetExamId ?? undefined);
     res.status(201).json({
       imported: inserted.length,
       attachedCount,
@@ -1969,6 +1992,7 @@ router.put('/questions/:id', async (req: AdminRequest, res) => {
     if (!updated) {
       return res.status(404).json({ error: 'Question not found.' });
     }
+    invalidateCbtExamCache();
     res.json({ question: updated });
   } catch (error) {
     console.error('Update question error:', error);
@@ -1980,6 +2004,7 @@ router.delete('/questions/:id', async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
     await db.delete(questions).where(eq(questions.id, id));
+    invalidateCbtExamCache();
     res.json({ success: true });
   } catch (error) {
     console.error('Delete question error:', error);
@@ -1990,6 +2015,7 @@ router.delete('/questions/:id', async (req: AdminRequest, res) => {
 // 5. EXAMINATION MANAGEMENT
 router.get('/examinations', async (_req: AdminRequest, res) => {
   try {
+    await ensureExamColumns();
     const exams = await db
       .select({
         id: examinations.id,
@@ -2007,6 +2033,7 @@ router.get('/examinations', async (_req: AdminRequest, res) => {
         instructions: examinations.instructions,
         isActive: examinations.isActive,
         resultsPublished: examinations.resultsPublished,
+        shuffleQuestions: examinations.shuffleQuestions,
         createdAt: examinations.createdAt,
       })
       .from(examinations)
@@ -2071,6 +2098,7 @@ router.get('/examinations', async (_req: AdminRequest, res) => {
 
 router.post('/examinations', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
+    await ensureExamColumns();
     const {
       title,
       subjectId,
@@ -2085,6 +2113,7 @@ router.post('/examinations', requireSuperAdmin, async (req: AdminRequest, res) =
       questionIds,
       isActive,
       resultsPublished,
+      shuffleQuestions,
     } = req.body ?? {};
 
     if (
@@ -2129,6 +2158,7 @@ router.post('/examinations', requireSuperAdmin, async (req: AdminRequest, res) =
         instructions: instructions.trim(),
         isActive: isActive !== false,
         resultsPublished: resultsPublished !== false,
+        shuffleQuestions: Boolean(shuffleQuestions),
       })
       .returning();
 
@@ -2155,6 +2185,7 @@ router.post('/examinations', requireSuperAdmin, async (req: AdminRequest, res) =
       targetDetails: created.title,
     });
 
+    invalidateCbtExamCache(created.id);
     res.status(201).json({ examination: created });
   } catch (error) {
     console.error('Create examination error:', error);
@@ -2164,6 +2195,7 @@ router.post('/examinations', requireSuperAdmin, async (req: AdminRequest, res) =
 
 router.put('/examinations/:id', requireSuperAdmin, async (req: AdminRequest, res) => {
   try {
+    await ensureExamColumns();
     const id = Number(req.params.id);
     const {
       title,
@@ -2178,6 +2210,7 @@ router.put('/examinations/:id', requireSuperAdmin, async (req: AdminRequest, res
       instructions,
       isActive,
       resultsPublished,
+      shuffleQuestions,
       questionIds,
     } = req.body ?? {};
 
@@ -2208,6 +2241,7 @@ router.put('/examinations/:id', requireSuperAdmin, async (req: AdminRequest, res
           : {}),
         ...(typeof isActive === 'boolean' ? { isActive } : {}),
         ...(typeof resultsPublished === 'boolean' ? { resultsPublished } : {}),
+        ...(typeof shuffleQuestions === 'boolean' ? { shuffleQuestions } : {}),
       })
       .where(eq(examinations.id, id))
       .returning();
@@ -2232,6 +2266,7 @@ router.put('/examinations/:id', requireSuperAdmin, async (req: AdminRequest, res
       }
     }
 
+    invalidateCbtExamCache(id);
     res.json({ examination: updated });
   } catch (error) {
     console.error('Update examination error:', error);
@@ -2255,10 +2290,108 @@ router.patch('/examinations/:id/toggle', requireSuperAdmin, async (req: AdminReq
       .set({ isActive: !existing.isActive })
       .where(eq(examinations.id, id))
       .returning();
+    invalidateCbtExamCache(id);
     res.json({ examination: updated });
   } catch (error) {
     console.error('Toggle examination error:', error);
     res.status(500).json({ error: 'Unable to update examination status.' });
+  }
+});
+
+router.patch('/examinations/:id/shuffle', requireSuperAdmin, async (req: AdminRequest, res) => {
+  try {
+    await ensureExamColumns();
+    const id = Number(req.params.id);
+    const [existing] = await db
+      .select()
+      .from(examinations)
+      .where(eq(examinations.id, id))
+      .limit(1);
+    if (!existing) {
+      return res.status(404).json({ error: 'Examination not found.' });
+    }
+    const nextValue =
+      typeof req.body?.shuffleQuestions === 'boolean'
+        ? req.body.shuffleQuestions
+        : !existing.shuffleQuestions;
+
+    const [updated] = await db
+      .update(examinations)
+      .set({ shuffleQuestions: nextValue })
+      .where(eq(examinations.id, id))
+      .returning();
+
+    await logAdminActivity({
+      adminId: req.admin!.id,
+      adminLabel: req.admin!.username,
+      action: nextValue ? 'ENABLE_EXAM_SHUFFLE' : 'DISABLE_EXAM_SHUFFLE',
+      targetType: 'examination',
+      targetDetails: updated.title,
+    });
+
+    invalidateCbtExamCache(id);
+    res.json({ examination: updated });
+  } catch (error) {
+    console.error('Toggle exam shuffle error:', error);
+    res.status(500).json({ error: 'Unable to update question shuffle setting.' });
+  }
+});
+
+router.post('/examinations/:id/shuffle-order', requireSuperAdmin, async (req: AdminRequest, res) => {
+  try {
+    const examId = Number(req.params.id);
+    const [existingExam] = await db
+      .select()
+      .from(examinations)
+      .where(eq(examinations.id, examId))
+      .limit(1);
+    if (!existingExam) {
+      return res.status(404).json({ error: 'Examination not found.' });
+    }
+
+    const attached = await db
+      .select()
+      .from(examQuestions)
+      .where(eq(examQuestions.examId, examId))
+      .orderBy(asc(examQuestions.sortOrder), asc(examQuestions.id));
+
+    if (attached.length < 2) {
+      return res.status(400).json({
+        error: 'Attach at least 2 questions before shuffling their master order.',
+      });
+    }
+
+    const shuffled = [...attached];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    await db.delete(examQuestions).where(eq(examQuestions.examId, examId));
+    await db.insert(examQuestions).values(
+      shuffled.map((item, idx) => ({
+        examId,
+        questionId: item.questionId,
+        sortOrder: idx + 1,
+      }))
+    );
+
+    await logAdminActivity({
+      adminId: req.admin!.id,
+      adminLabel: req.admin!.username,
+      action: 'SHUFFLE_EXAM_ORDER',
+      targetType: 'examination',
+      targetDetails: `${existingExam.title} (${shuffled.length} questions reordered)`,
+    });
+
+    invalidateCbtExamCache(examId);
+    res.json({
+      questionIds: shuffled.map((q) => q.questionId),
+      count: shuffled.length,
+    });
+  } catch (error) {
+    console.error('Shuffle exam order error:', error);
+    res.status(500).json({ error: 'Unable to shuffle master question order.' });
   }
 });
 
@@ -2284,6 +2417,7 @@ router.put('/examinations/:id/assignments', requireSuperAdmin, async (req: Admin
       );
     }
 
+    invalidateCbtExamCache(examId);
     res.json({ success: true });
   } catch (error) {
     console.error('Assign exam error:', error);
@@ -2330,6 +2464,7 @@ router.delete('/examinations/:id', requireSuperAdmin, async (req: AdminRequest, 
   try {
     const id = Number(req.params.id);
     await db.delete(examinations).where(eq(examinations.id, id));
+    invalidateCbtExamCache(id);
     res.json({ success: true });
   } catch (error) {
     console.error('Delete exam error:', error);
@@ -2430,6 +2565,7 @@ router.patch(
         targetDetails: updated.title,
       });
 
+      invalidateCbtExamCache(id);
       res.json({ examination: updated });
     } catch (error) {
       console.error('Publish results toggle error:', error);
@@ -2968,6 +3104,7 @@ router.get('/database-status', requireSuperAdmin, async (_req: AdminRequest, res
     if (isDatabaseConfigured()) {
       try {
         await db.execute(sql`SELECT 1`);
+        await ensureAllSchemaColumns();
         postgresConnected = true;
         const [
           [{ value: adminCount }],

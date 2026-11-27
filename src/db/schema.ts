@@ -180,6 +180,7 @@ export const examinations = pgTable('examinations', {
   instructions: text('instructions').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   resultsPublished: boolean('results_published').notNull().default(true),
+  shuffleQuestions: boolean('shuffle_questions').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
