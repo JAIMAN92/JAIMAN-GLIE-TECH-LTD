@@ -103,6 +103,7 @@ export function CbtPortalPage() {
   // Login form state
   const [examNumber, setExamNumber] = useState('');
   const [passcode, setPasscode] = useState('');
+  const [loginFormKey, setLoginFormKey] = useState(0);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
 
@@ -708,7 +709,9 @@ export function CbtPortalPage() {
         setLoginError(data.error || 'Sign-in failed.');
       } else {
         setStudentSession(data.token, data.student);
+        setExamNumber('');
         setPasscode('');
+        setLoginError('');
       }
     } catch {
       setLoginError('Network error. Please try again.');
@@ -717,15 +720,14 @@ export function CbtPortalPage() {
     }
   };
 
-  const handleStudentLogout = async () => {
+  const handleStudentLogout = () => {
+    const tokenToRevoke = studentToken;
     clearOptionFlushTimer();
     exitExamFullscreen();
-    if (studentToken) {
-      await fetch('/api/cbt/logout', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${studentToken}` },
-      }).catch(() => {});
-    }
+    setExamNumber('');
+    setPasscode('');
+    setLoginError('');
+    setLoginFormKey((prev) => prev + 1);
     clearStudentSession();
     setExams([]);
     setSelectedExamForInstructions(null);
@@ -744,6 +746,13 @@ export function CbtPortalPage() {
     setSecurityViolations(0);
     setSecurityLockMessage(null);
     setSubmissionOutcome(null);
+
+    if (tokenToRevoke) {
+      void fetch('/api/cbt/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tokenToRevoke}` },
+      }).catch(() => {});
+    }
   };
 
   const handleStartExam = async () => {
@@ -931,7 +940,12 @@ export function CbtPortalPage() {
               </div>
             )}
 
-            <form onSubmit={handleStudentLogin} className="space-y-4">
+            <form
+              key={loginFormKey}
+              onSubmit={handleStudentLogin}
+              autoComplete="off"
+              className="space-y-4"
+            >
               <div>
                 <label
                   htmlFor="examNumber"
@@ -941,8 +955,13 @@ export function CbtPortalPage() {
                 </label>
                 <input
                   id="examNumber"
+                  name="cbt-exam-number"
                   type="text"
                   required
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
                   value={examNumber}
                   onChange={(e) => setExamNumber(e.target.value)}
                   placeholder="e.g. JGT-2026-001"
@@ -959,8 +978,10 @@ export function CbtPortalPage() {
                 </label>
                 <input
                   id="studentPasscode"
+                  name="cbt-access-passcode"
                   type="password"
                   required
+                  autoComplete="new-password"
                   value={passcode}
                   onChange={(e) => setPasscode(e.target.value)}
                   placeholder="Enter access password"
