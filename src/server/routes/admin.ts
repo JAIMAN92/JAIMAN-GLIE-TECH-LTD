@@ -1428,9 +1428,74 @@ router.patch('/students/:id/toggle', async (req: AdminRequest, res) => {
   }
 });
 
+router.post('/students/bulk-delete', async (req: AdminRequest, res) => {
+  try {
+    const rawIds = req.body?.studentIds;
+    if (!Array.isArray(rawIds)) {
+      return res.status(400).json({
+        error: 'Provide an array of student IDs to delete.',
+      });
+    }
+
+    const uniqueIds = Array.from(
+      new Set(
+        rawIds
+          .map((value) => Number(value))
+          .filter((id) => Number.isInteger(id) && id > 0)
+      )
+    );
+
+    if (uniqueIds.length === 0) {
+      return res.status(400).json({
+        error: 'Select at least one valid student record to delete.',
+      });
+    }
+
+    if (uniqueIds.length > 1000) {
+      return res.status(400).json({
+        error: 'You can delete up to 1,000 students at a time.',
+      });
+    }
+
+    const deletedRows = await db
+      .delete(students)
+      .where(inArray(students.id, uniqueIds))
+      .returning({
+        id: students.id,
+        examNumber: students.examNumber,
+        fullName: students.fullName,
+      });
+
+    for (const row of deletedRows) {
+      invalidateStudentSessionsForStudent(row.id);
+    }
+
+    if (deletedRows.length > 0) {
+      await logAdminActivity({
+        adminId: req.admin!.id,
+        adminLabel: req.admin!.username,
+        action: 'BULK_DELETE_STUDENTS',
+        targetType: 'student',
+        targetDetails: `Deleted ${deletedRows.length} student record(s)`,
+      });
+    }
+
+    res.json({
+      deletedCount: deletedRows.length,
+      deletedIds: deletedRows.map((row) => row.id),
+    });
+  } catch (error) {
+    console.error('Bulk delete students error:', error);
+    res.status(500).json({ error: 'Unable to delete selected students.' });
+  }
+});
+
 router.delete('/students/:id', async (req: AdminRequest, res) => {
   try {
     const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'Invalid student ID.' });
+    }
     await db.delete(students).where(eq(students.id, id));
     invalidateStudentSessionsForStudent(id);
     res.json({ success: true });

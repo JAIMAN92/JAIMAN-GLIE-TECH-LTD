@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   Download,
   Edit3,
@@ -11,6 +12,7 @@ import {
   Trash2,
   Upload,
   UserPlus,
+  X,
 } from 'lucide-react';
 import { SchoolNameBadge } from '../SchoolNameBadge.tsx';
 import {
@@ -91,6 +93,9 @@ export function AdminStudentRegistrationSection({ token }: { token: string }) {
   const [filterArm, setFilterArm] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [selectedStudentIds, setSelectedStudentIds] = useState<number[]>([]);
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // Single Manual Student Form (Create or Edit)
   const [editingStudent, setEditingStudent] = useState<StudentRow | null>(null);
@@ -144,7 +149,10 @@ export function AdminStudentRegistrationSection({ token }: { token: string }) {
       }
       if (stRes.ok) {
         const stJson = await stRes.json();
-        setStudents(stJson.students || []);
+        const loadedStudents: StudentRow[] = stJson.students || [];
+        setStudents(loadedStudents);
+        const validIds = new Set(loadedStudents.map((s) => s.id));
+        setSelectedStudentIds((prev) => prev.filter((id) => validIds.has(id)));
       }
       if (caRes.ok) {
         const caJson = await caRes.json();
@@ -306,6 +314,41 @@ export function AdminStudentRegistrationSection({ token }: { token: string }) {
     () => new Set(students.map((s) => s.classLevel)).size,
     [students]
   );
+
+  const selectedIdSet = useMemo(
+    () => new Set(selectedStudentIds),
+    [selectedStudentIds]
+  );
+
+  const selectedStudentsList = useMemo(
+    () => students.filter((s) => selectedIdSet.has(s.id)),
+    [students, selectedIdSet]
+  );
+
+  const filteredSelectedCount = useMemo(
+    () => filteredStudents.filter((s) => selectedIdSet.has(s.id)).length,
+    [filteredStudents, selectedIdSet]
+  );
+
+  const allFilteredSelected =
+    filteredStudents.length > 0 &&
+    filteredSelectedCount === filteredStudents.length;
+
+  const toggleSelectStudent = (id: number) => {
+    setSelectedStudentIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSelectAllFiltered = () => {
+    const filteredIds = filteredStudents.map((s) => s.id);
+    if (allFilteredSelected) {
+      const filteredSet = new Set(filteredIds);
+      setSelectedStudentIds((prev) => prev.filter((id) => !filteredSet.has(id)));
+    } else {
+      setSelectedStudentIds((prev) => Array.from(new Set([...prev, ...filteredIds])));
+    }
+  };
 
   const openManualStudio = (student?: StudentRow) => {
     setErr('');
@@ -554,8 +597,45 @@ export function AdminStudentRegistrationSection({ token }: { token: string }) {
       headers: { Authorization: `Bearer ${token}` },
     });
     setConfirmDeleteId(null);
+    setSelectedStudentIds((prev) => prev.filter((item) => item !== id));
     setMsg('Student record removed.');
     loadData();
+  };
+
+  const handleBulkDeleteStudents = async () => {
+    if (selectedStudentIds.length === 0) return;
+    setErr('');
+    setMsg('');
+    setBulkDeleting(true);
+    try {
+      const res = await fetch('/api/admin/students/bulk-delete', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ studentIds: selectedStudentIds }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setErr(json.error || 'Unable to delete selected students.');
+        setShowBulkDeleteModal(false);
+        return;
+      }
+
+      const deletedIdsSet = new Set<number>(json.deletedIds || selectedStudentIds);
+      setSelectedStudentIds((prev) => prev.filter((id) => !deletedIdsSet.has(id)));
+      setShowBulkDeleteModal(false);
+      setMsg(
+        `Deleted ${json.deletedCount ?? deletedIdsSet.size} selected student record(s).`
+      );
+      await loadData();
+    } catch {
+      setErr('Network error while deleting selected students.');
+      setShowBulkDeleteModal(false);
+    } finally {
+      setBulkDeleting(false);
+    }
   };
 
   const exportFilteredRosterCsv = () => {
@@ -807,16 +887,70 @@ export function AdminStudentRegistrationSection({ token }: { token: string }) {
               ))}
             </select>
             {filteredStudents.length > 0 && (
-              <button
-                type="button"
-                onClick={exportFilteredRosterCsv}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-[#123B72] hover:bg-slate-50 whitespace-nowrap shrink-0"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Export Roster CSV
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={exportFilteredRosterCsv}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 text-xs font-semibold text-[#123B72] hover:bg-slate-50 whitespace-nowrap shrink-0"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Export Roster CSV
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedStudentIds.length === 0 || bulkDeleting}
+                  onClick={() => setShowBulkDeleteModal(true)}
+                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                    selectedStudentIds.length > 0
+                      ? 'bg-red-600 text-white hover:bg-red-700'
+                      : 'border border-red-200 text-red-400 bg-red-50/40 cursor-not-allowed'
+                  }`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete Selected
+                  {selectedStudentIds.length > 0
+                    ? ` (${selectedStudentIds.length})`
+                    : ''}
+                </button>
+              </div>
             )}
           </div>
+
+          {selectedStudentIds.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm text-red-900">
+                <span className="font-semibold">
+                  {selectedStudentIds.length} student
+                  {selectedStudentIds.length === 1 ? '' : 's'} selected
+                </span>
+                {!allFilteredSelected && filteredStudents.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={toggleSelectAllFiltered}
+                    className="font-semibold text-[#123B72] underline hover:no-underline"
+                  >
+                    Select all {filteredStudents.length} shown
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedStudentIds([])}
+                  className="font-medium text-slate-600 underline hover:no-underline"
+                >
+                  Clear selection
+                </button>
+              </div>
+              <button
+                type="button"
+                disabled={bulkDeleting}
+                onClick={() => setShowBulkDeleteModal(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-50 whitespace-nowrap shrink-0"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete Selected ({selectedStudentIds.length})
+              </button>
+            </div>
+          )}
 
           {/* Students Table */}
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -851,6 +985,16 @@ export function AdminStudentRegistrationSection({ token }: { token: string }) {
                 <table className="w-full text-left text-sm">
                   <thead className="bg-[#F5F8FC] text-xs text-slate-500 border-b border-slate-200">
                     <tr>
+                      <th className="pl-4 pr-2 py-3 w-10">
+                        <input
+                          type="checkbox"
+                          checked={allFilteredSelected}
+                          onChange={toggleSelectAllFiltered}
+                          aria-label="Select all filtered students"
+                          title="Select or deselect all filtered students"
+                          className="w-4 h-4 rounded border-slate-300 text-[#123B72] focus:ring-[#1769AA] cursor-pointer"
+                        />
+                      </th>
                       <th className="px-4 py-3 font-semibold">Exam Number</th>
                       <th className="px-4 py-3 font-semibold">Full Name</th>
                       <th className="px-4 py-3 font-semibold">
@@ -866,8 +1010,26 @@ export function AdminStudentRegistrationSection({ token }: { token: string }) {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
-                    {filteredStudents.map((st) => (
-                      <tr key={st.id} className="hover:bg-slate-50">
+                    {filteredStudents.map((st) => {
+                      const isSelected = selectedIdSet.has(st.id);
+                      return (
+                      <tr
+                        key={st.id}
+                        className={
+                          isSelected
+                            ? 'bg-red-50/40 hover:bg-red-50/70'
+                            : 'hover:bg-slate-50'
+                        }
+                      >
+                        <td className="pl-4 pr-2 py-3">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelectStudent(st.id)}
+                            aria-label={`Select ${st.fullName}`}
+                            className="w-4 h-4 rounded border-slate-300 text-[#123B72] focus:ring-[#1769AA] cursor-pointer"
+                          />
+                        </td>
                         <td className="px-4 py-3 font-mono-tabular font-semibold text-[#1769AA]">
                           {st.examNumber}
                         </td>
@@ -938,12 +1100,106 @@ export function AdminStudentRegistrationSection({ token }: { token: string }) {
                           </div>
                         </td>
                       </tr>
-                    ))}
+                    );
+                    })}
                   </tbody>
                 </table>
               </div>
             )}
           </div>
+
+          {showBulkDeleteModal && (
+            <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="bulk-delete-students-title"
+                className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2.5 text-red-700">
+                    <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                      <AlertTriangle className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3
+                        id="bulk-delete-students-title"
+                        className="font-display text-lg font-bold text-[#123B72]"
+                      >
+                        Delete {selectedStudentIds.length} Selected Student
+                        {selectedStudentIds.length === 1 ? '' : 's'}?
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        This action cannot be undone.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={bulkDeleting}
+                    onClick={() => setShowBulkDeleteModal(false)}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <p className="text-sm text-slate-600">
+                  Removing these student records will permanently revoke their
+                  CBT login credentials and delete any associated examination
+                  attempts and scores.
+                </p>
+
+                {selectedStudentsList.length > 0 && (
+                  <div className="bg-[#F5F8FC] border border-slate-200 rounded-xl p-3 space-y-1.5 max-h-40 overflow-y-auto">
+                    {selectedStudentsList.slice(0, 5).map((st) => (
+                      <div
+                        key={st.id}
+                        className="flex items-center justify-between gap-2 text-xs"
+                      >
+                        <span className="font-medium text-[#123B72] truncate">
+                          {st.fullName}
+                        </span>
+                        <span className="font-mono-tabular text-slate-500 shrink-0">
+                          {st.examNumber}
+                        </span>
+                      </div>
+                    ))}
+                    {selectedStudentsList.length > 5 && (
+                      <p className="text-xs text-slate-500 font-medium pt-1">
+                        ...and {selectedStudentsList.length - 5} more selected
+                        student{selectedStudentsList.length - 5 === 1 ? '' : 's'}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    disabled={bulkDeleting}
+                    onClick={() => setShowBulkDeleteModal(false)}
+                    className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={bulkDeleting}
+                    onClick={handleBulkDeleteStudents}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:opacity-60"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    {bulkDeleting
+                      ? 'Deleting...'
+                      : `Delete ${selectedStudentIds.length} Student${
+                          selectedStudentIds.length === 1 ? '' : 's'
+                        }`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
